@@ -241,6 +241,7 @@ if (App-Has 'data-missed-action') {
     Start-Process -FilePath $env:APP_EXE | Out-Null       # brings the main window up
     Start-Sleep -Seconds 3
     $before = Get-Date
+    $target = $null
     $pressed = W uia-press $APP_PROCESS 'Save audio'
     # Windows' Save dialog: bring it to the front, then Enter (its default button, Save).
     if (Wait-Until 10 { (App-Windows) -match 'Save audio' }) {
@@ -260,9 +261,15 @@ if (App-Has 'data-missed-action') {
     Start-Sleep -Seconds 3
     # The app suggests only a file name (BlipAI-<time>.wav), so Windows' dialog picks the
     # folder: look for that name in the user's folders and the app's install folder.
-    $saved = @($env:USERPROFILE, $env:INSTALL_DIR) | Where-Object { $_ } |
-      ForEach-Object { Get-ChildItem -Path $_ -Recurse -Depth 5 -Include 'BlipAI-*.wav', 'BlipAI-*.mp3' -ErrorAction SilentlyContinue } |
-      Where-Object { $_.LastWriteTime -gt $before } | Select-Object -First 1
+    # The copy keeps the recording's modified time (Windows' CopyFile does), so go by when
+    # the file was created.
+    $saved = $null
+    if ($target -and (Test-Path $target)) { $saved = Get-Item $target }
+    if (-not $saved) {
+      $saved = @($env:USERPROFILE, $env:INSTALL_DIR) | Where-Object { $_ } |
+        ForEach-Object { Get-ChildItem -Path $_ -Recurse -Depth 5 -Include 'BlipAI-*.wav', 'BlipAI-*.mp3' -ErrorAction SilentlyContinue } |
+        Where-Object { $_.CreationTime -gt $before } | Select-Object -First 1
+    }
     if ($saved -and $saved.Length -gt 10000) { Record PASS 'Missed item: Save audio writes the recording' "$($saved.FullName -replace [regex]::Escape($env:USERPROFILE), '~'), $($saved.Length) bytes" }
     else { Record FAIL 'Missed item: Save audio writes the recording' "press: $pressed; no new BlipAI-*.wav/.mp3 in the user's folders or the app's" }
     $pressed = W uia-press $APP_PROCESS 'Retry'
