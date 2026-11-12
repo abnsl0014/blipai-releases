@@ -60,7 +60,7 @@ with_timeout() {  # with_timeout SECONDS COMMAND... → the command, killed (exi
   perl -e 'alarm shift; exec @ARGV' "$seconds" "$@"
 }
 # osascript can wait forever, e.g. on an automation prompt nobody can click.
-osa() { with_timeout 20 osa "$@"; }
+osa() { with_timeout 20 osascript "$@"; }
 
 retry() {  # retry COMMAND...: up to 4 tries, 10/20/30 s apart, for network blips on the runner
   local try
