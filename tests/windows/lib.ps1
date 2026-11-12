@@ -15,8 +15,8 @@ if (-not (Test-Path $RESULTS)) { New-Item -ItemType File -Path $RESULTS | Out-Nu
 function Record([string]$Status, [string]$Check, [string]$Detail = '') {
   $Detail = $Detail -replace "[`t`r`n]+", ' '
   Add-Content -Path $RESULTS -Value "$Status`t$Check`t$Detail" -Encoding utf8
-  if ($Status -eq 'FAIL') { Write-Host "::error title=$Check::$Detail" }
-  elseif ($Status -in 'WARN', 'SKIP') { Write-Host "::warning title=$Check::$Detail" }
+  if ($Status -eq 'FAIL') { Write-Host "::error title=${Check}::${Detail}" }
+  elseif ($Status -in 'WARN', 'SKIP') { Write-Host "::warning title=${Check}::${Detail}" }
   else { Write-Host "$Status  $Check  $Detail" }
 }
 
@@ -96,20 +96,15 @@ function Speech-File([string]$Text) {
   $hash = -join ($sha.ComputeHash([Text.Encoding]::UTF8.GetBytes($Text))[0..5] | ForEach-Object { $_.ToString('x2') })
   Join-Path $env:RUNNER_TEMP "speech-$hash.wav"
 }
-function Render-Speech([string[]]$Texts) {
-  Add-Type -AssemblyName System.Speech
+function Render-Speech([string[]]$Texts) {   # wtool runs on .NET Framework, which has System.Speech
   foreach ($t in $Texts) {
     $f = Speech-File $t
-    if (Test-Path $f) { continue }
-    $s = New-Object System.Speech.Synthesis.SpeechSynthesizer
-    $s.SetOutputToWaveFile($f)
-    $s.Speak($t)
-    $s.Dispose()
+    if (-not (Test-Path $f)) { W speak-file $f $t | Out-Null }
   }
 }
 function Speak([string]$Text) {
   Render-Speech @($Text)
-  (New-Object System.Media.SoundPlayer (Speech-File $Text)).PlaySync()
+  W play (Speech-File $Text) | Out-Null
 }
 
 # The dictation target: a text box (wtool target) whose text is mirrored to a file.

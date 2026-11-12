@@ -11,6 +11,8 @@
 //   wtool uia-text PROCESS          the text of every element in the process's windows
 //   wtool uia-press PROCESS LABEL   invoke the first button whose name contains LABEL
 //   wtool screenshot FILE           PNG of the whole screen
+//   wtool speak-file FILE TEXT      synthesize TEXT (Windows' built-in voice) to a WAV file
+//   wtool play FILE                 play a WAV on the default output and wait until it ends
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
@@ -241,6 +243,15 @@ static class WTool
             else if (cmd == "uia-text" && a.Length == 2) UiaText(a[1]);
             else if (cmd == "uia-press" && a.Length == 3) UiaPress(a[1], a[2]);
             else if (cmd == "screenshot" && a.Length == 2) Screenshot(a[1]);
+            else if (cmd == "speak-file" && a.Length == 3) {
+                using (var s = new System.Speech.Synthesis.SpeechSynthesizer()) {
+                    s.SetOutputToWaveFile(a[1]);
+                    s.Speak(a[2]);
+                }
+            }
+            else if (cmd == "play" && a.Length == 2) {
+                using (var p = new System.Media.SoundPlayer(a[1])) p.PlaySync();
+            }
             else { Console.Error.WriteLine("usage: see the header of wtool.cs"); return 2; }
             return 0;
         } catch (Exception e) {

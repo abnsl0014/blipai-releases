@@ -11,10 +11,17 @@ $os = Get-CimInstance Win32_OperatingSystem
 Record INFO 'Runner' "$($os.Caption) $($os.Version), $env:PROCESSOR_ARCHITECTURE"
 
 # --- helper tool ------------------------------------------------------------------
-$csc = Join-Path $env:WINDIR 'Microsoft.NET\Framework64\v4.0.30319\csc.exe'
-$wpf = Join-Path $env:WINDIR 'Microsoft.NET\Framework64\v4.0.30319\WPF'
-$refs = @('System.Windows.Forms.dll', 'System.Drawing.dll',
-          (Join-Path $wpf 'UIAutomationClient.dll'), (Join-Path $wpf 'UIAutomationTypes.dll'), (Join-Path $wpf 'WindowsBase.dll'))
+$fx = Join-Path $env:WINDIR 'Microsoft.NET\Framework64\v4.0.30319'
+$csc = Join-Path $fx 'csc.exe'
+$refs = @('System.Windows.Forms.dll', 'System.Drawing.dll')
+foreach ($dll in 'UIAutomationClient.dll', 'UIAutomationTypes.dll', 'WindowsBase.dll', 'System.Speech.dll') {
+  $path = Get-ChildItem -Path $fx -Filter $dll -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1 -ExpandProperty FullName
+  if (-not $path) {   # the reference assemblies, if the runtime folder doesn't have it
+    $path = Get-ChildItem -Path "${env:ProgramFiles(x86)}\Reference Assemblies\Microsoft\Framework\.NETFramework" -Filter $dll -Recurse -ErrorAction SilentlyContinue |
+      Select-Object -Last 1 -ExpandProperty FullName
+  }
+  $refs += $(if ($path) { $path } else { $dll })
+}
 $cscOut = & $csc /nologo /optimize /out:$WTOOL ($refs | ForEach-Object { "/r:$_" }) "$PSScriptRoot/wtool.cs" 2>&1
 if ($LASTEXITCODE -ne 0) { Record FAIL 'Build the helper tool' (($cscOut | Select-Object -Last 3) -join ' '); exit 0 }
 
@@ -32,7 +39,7 @@ foreach ($try in 1, 2) {
   if ($code -in 0, 1641, 3010) { break }   # 3010/1641: installed, a reboot is "suggested"
   Start-Sleep -Seconds 15
 }
-if ($code -notin 0, 1641, 3010) { Record FAIL 'Install VB-CABLE (virtual audio)' "choco exit $code: $((Get-Content $chocoLog -Tail 5) -join ' ')" }
+if ($code -notin 0, 1641, 3010) { Record FAIL 'Install VB-CABLE (virtual audio)' "choco exit ${code}: $((Get-Content $chocoLog -Tail 5) -join ' ')" }
 choco install sox.portable -y --no-progress *> (Join-Path $OUT 'choco-sox.txt')
 Restart-Service -Name Audiosrv -Force -ErrorAction SilentlyContinue
 Start-Sleep -Seconds 5

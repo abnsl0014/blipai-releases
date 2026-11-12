@@ -194,7 +194,8 @@ if (App-Has 'id="status-action"') {
 
 # 4h. Failed transcription: a "Missed" item with Retry and Save audio (0.5.10+).
 if (App-Has 'data-missed-action') {
-  $ips = @(Resolve-DnsName -Name 'proxy.tryblipai.com', 'api.groq.com' -ErrorAction SilentlyContinue | Where-Object { $_.IPAddress } | ForEach-Object { $_.IPAddress }) | Sort-Object -Unique
+  $ips = @('proxy.tryblipai.com', 'api.groq.com' | ForEach-Object { Resolve-DnsName -Name $_ -ErrorAction SilentlyContinue } |
+    Where-Object { $_.IPAddress } | ForEach-Object { $_.IPAddress }) | Sort-Object -Unique
   $profilesOff = @(Get-NetFirewallProfile | Where-Object { -not $_.Enabled } | ForEach-Object { $_.Name })
   if ($profilesOff) { Set-NetFirewallProfile -Name $profilesOff -Enabled True }
   New-NetFirewallRule -DisplayName 'blip-test-block-stt' -Direction Outbound -RemoteAddress $ips -Action Block | Out-Null
@@ -257,11 +258,12 @@ if (App-Has 'id="status-action"') {
   $cfgPath = App-Config
   $cfg = Get-Content -Raw $cfgPath | ConvertFrom-Json
   $b64 = { param($o) [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes(($o | ConvertTo-Json -Compress))).TrimEnd('=').Replace('+', '-').Replace('/', '_') }
-  $payload = @{ sub = 'expired'; exp = [int][double]::Parse((Get-Date -UFormat %s)) - 3600 }
+  $expired = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds() - 3600
+  $payload = @{ sub = 'expired'; exp = $expired }
   try {
     $p = $cfg.authToken.Split('.')[1].Replace('-', '+').Replace('_', '/'); $p += '=' * ((4 - $p.Length % 4) % 4)
     $payload = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($p)) | ConvertFrom-Json
-    $payload.exp = [int][double]::Parse((Get-Date -UFormat %s)) - 3600
+    $payload.exp = $expired
   } catch { }
   $cfg.authToken = (& $b64 @{ alg = 'HS256'; typ = 'JWT' }) + '.' + (& $b64 $payload) + '.expired'
   $cfg | ConvertTo-Json -Depth 20 | Set-Content -Path $cfgPath -Encoding utf8
