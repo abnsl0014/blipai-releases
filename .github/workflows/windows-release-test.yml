@@ -1,8 +1,8 @@
 # Tests a Blip AI Windows release on a real Windows machine, the way a user gets it:
 # download the installer from this repo, install it silently, launch it, sign in,
 # dictate into a text box through a virtual microphone (VB-CABLE) with synthetic key
-# presses, and check the auto-updater's files. Scripts: tests/windows/ (the Mac
-# version is mac-release-test.yml and tests/mac/; both share the README there).
+# presses, and check the auto-updater's files. Scripts and README: tests/windows/
+# (the Mac version is mac-release-test.yml and tests/mac/).
 #
 # Runs when a release is published, by hand (Run workflow, optional tag; drafts work),
 # and when the test itself changes (a "Test-tag: v0.5.10" line in the commit message
