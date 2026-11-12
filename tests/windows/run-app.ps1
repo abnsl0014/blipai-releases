@@ -246,16 +246,25 @@ if (App-Has 'data-missed-action') {
     if (Wait-Until 10 { (App-Windows) -match 'Save audio' }) {
       W focus 'Save audio' | Out-Null
       Start-Sleep -Milliseconds 800
+      # Choose where to save, as a person would: a full path in the file name box.
+      $target = Join-Path ([Environment]::GetFolderPath('MyDocuments')) 'BlipAI-saved-by-test.wav'
+      Set-Clipboard -Value $target
+      W keys chord ctrl+a | Out-Null
+      W keys chord ctrl+v | Out-Null
+      Start-Sleep -Milliseconds 300
       W keys tap return | Out-Null
       Wait-Until 10 { -not ((App-Windows) -match 'Save audio') } | Out-Null
     } else {
       $pressed = "$pressed; no Save dialog appeared"
     }
     Start-Sleep -Seconds 3
-    $saved = Get-ChildItem -Path ([Environment]::GetFolderPath('MyDocuments')), (Join-Path $env:USERPROFILE 'Downloads'), ([Environment]::GetFolderPath('Desktop')), ([Environment]::GetFolderPath('MyMusic')) -Include *.wav, *.mp3 -Recurse -Depth 1 -ErrorAction SilentlyContinue |
+    # The app suggests only a file name (BlipAI-<time>.wav), so Windows' dialog picks the
+    # folder: look for that name in the user's folders and the app's install folder.
+    $saved = @($env:USERPROFILE, $env:INSTALL_DIR) | Where-Object { $_ } |
+      ForEach-Object { Get-ChildItem -Path $_ -Recurse -Depth 5 -Include 'BlipAI-*.wav', 'BlipAI-*.mp3' -ErrorAction SilentlyContinue } |
       Where-Object { $_.LastWriteTime -gt $before } | Select-Object -First 1
-    if ($saved -and $saved.Length -gt 10000) { Record PASS 'Missed item: Save audio writes the recording' "$($saved.Name), $($saved.Length) bytes" }
-    else { Record FAIL 'Missed item: Save audio writes the recording' "press: $pressed; no new .wav/.mp3 in Documents, Downloads, Desktop or Music" }
+    if ($saved -and $saved.Length -gt 10000) { Record PASS 'Missed item: Save audio writes the recording' "$($saved.FullName -replace [regex]::Escape($env:USERPROFILE), '~'), $($saved.Length) bytes" }
+    else { Record FAIL 'Missed item: Save audio writes the recording' "press: $pressed; no new BlipAI-*.wav/.mp3 in the user's folders or the app's" }
     $pressed = W uia-press $APP_PROCESS 'Retry'
     $retried = $null
     Wait-Until 60 { $r = Get-BlipHistory | Where-Object { "$($_.timestamp)" -eq "$($missed.timestamp)" } | Select-Object -First 1; if ($r -and $r.status -ne 'missed' -and $r.text) { $script:retried = $r.text }; [bool]$script:retried } | Out-Null
