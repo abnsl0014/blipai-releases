@@ -190,7 +190,7 @@ t0=$(now_ms)
 text=$(wait_text 30)
 t1=$(now_ms)
 judge "Push-to-talk (hold Fn) types into the focused app" "$phrase" "$text" && \
-  record INFO "Push-to-talk: Fn released → text in TextEdit" "$((t1 - t0)) ms"
+  record INFO "Push-to-talk: Fn released → text in TextEdit" "$((t1 - t0 - 2000)) ms (TextEdit is checked every 0.25 s)"
 screenshot push-to-talk
 mic_line=$(grep -a '\[mic\] active mode=' "$(app_log)" 2>/dev/null | tail -n 1 | sed 's/.*\[mic\] active //' | cut -c1-120)
 if [ "$mic_mode" = manual ]; then
