@@ -1,7 +1,7 @@
 #!/bin/bash
-# Writes the job summary from results.tsv, copies the app's logs into the artifact with
-# tokens and email addresses removed (this repo and its artifacts are public), and
-# fails the job if any check failed.
+# Writes the job summary from results.tsv, removes tokens and email addresses from every
+# text file in the artifact (this repo and its artifacts are public), and fails the job
+# if any check failed.
 set -uo pipefail
 source "$(dirname "$0")/lib.sh"
 
@@ -15,7 +15,8 @@ redact() {
 
 log=$(app_log)
 [ -n "$log" ] && redact < "$log" > "$OUT/main.log"
-for f in "$OUT"/*.log; do
+# Signed-in window text (ui-*.txt) and the results file can show the account too.
+for f in "$OUT"/*.log "$OUT"/*.txt "$OUT"/*.tsv; do
   [ -f "$f" ] && { redact < "$f" > "$f.tmp" && mv "$f.tmp" "$f"; }
 done
 

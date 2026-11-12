@@ -26,8 +26,9 @@ variables → Actions and add:
 | `BLIP_TEST_EMAIL` | the test account's email |
 | `BLIP_TEST_PASSWORD` | its password |
 
-Use an account that signs in with email and password, and isn't anyone's real account.
-Ideally it's on Pro, so repeated runs don't hit the free word limit. Without these secrets,
+Use a separate account made only for this, never a real one: the logs and screenshots
+are public, and the signed-in screenshots show the account's home window. It needs an
+email and password sign-in, ideally on Pro so repeated runs don't hit the free word limit. Without these secrets,
 sign-in and dictation are skipped with a warning, and everything else still runs.
 
 ## What it checks
