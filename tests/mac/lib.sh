@@ -55,11 +55,17 @@ app_windows() {  # names of the app's windows, comma separated
 }
 
 app_log() {  # path of the app's electron-log file (it only exists once something was logged)
-  find "$HOME/Library/Logs" -path '*Blip*' -name 'main.log' 2>/dev/null | head -n 1
+  find "$HOME/Library/Logs" "$HOME/Library/Application Support" -maxdepth 3 -ipath '*blip*' \
+    -name 'main.log' 2>/dev/null | head -n 1
 }
 
 app_config() {  # path of the app's electron-store file
-  find "$HOME/Library/Application Support" -maxdepth 2 -path '*Blip*' -name 'config.json' 2>/dev/null | head -n 1
+  find "$HOME/Library/Application Support" -maxdepth 2 -ipath '*blip*' -name 'config.json' 2>/dev/null | head -n 1
+}
+
+log_files() {  # logs written in the last 15 minutes, for a check that found none of the app's
+  find "$HOME/Library/Logs" "$HOME/Library/Application Support" -maxdepth 4 -name '*.log' -mmin -15 \
+    2>/dev/null | head -n 8 | xargs
 }
 
 launch_app() {

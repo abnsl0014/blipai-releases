@@ -82,10 +82,11 @@ ui_dump onboarding
 record INFO "Onboarding text" "$(grep -v '^== window' "$OUT/ui-onboarding.txt" | head -n 12 | tr '\n' '|' | cut -c1-300)"
 
 # The updater checks 5 s after launch. On the latest release it must find nothing newer.
-update_line=$(grep -m1 -E "Found version|is not available|Error: " "$(app_log)" 2>/dev/null)
+log_path=$(app_log)
+update_line=$(grep -m1 -E "Found version|is not available|Error: " "$log_path" 2>/dev/null)
 latest=$(gh release view -R "${REPO:-$GITHUB_REPOSITORY}" --json tagName -q .tagName 2>/dev/null)
 if [ -z "$update_line" ]; then
-  record FAIL "Update check on launch" "no update check in main.log 15 s after launch"
+  record FAIL "Update check on launch" "no update check in the app's main.log 15 s after launch (log: ${log_path:-none}; recent logs: $(log_files))"
 elif [ "$TAG" = "$latest" ] && grep -q "is not available" <<< "$update_line"; then
   record PASS "Update check on launch" "up to date: $(cut -c1-160 <<< "$update_line" | sed 's/.*\] //')"
 elif [ "$TAG" = "$latest" ]; then

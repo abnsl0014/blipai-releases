@@ -44,7 +44,7 @@ if grep -q "Found version ${VERSION}" <<< "$found"; then
 elif [ -n "$found" ]; then
   record FAIL "Previous release is offered this update" "$previous logged: $(cut -c1-200 <<< "$found")"
 else
-  record FAIL "Previous release is offered this update" "$previous logged no update check within 90 s"
+  record FAIL "Previous release is offered this update" "$previous logged no update check within 90 s (log: ${log:-none}; recent logs: $(log_files))"
 fi
 
 osascript -e "tell application id \"$(defaults read "$old_app/Contents/Info" CFBundleIdentifier)\" to quit" > /dev/null 2>&1 || true
@@ -54,5 +54,5 @@ pkill -f MacKeyServer 2>/dev/null || true
 cp "$(app_log)" "$OUT/previous-release-main.log" 2>/dev/null || true
 # Leave a clean machine for the fresh-install test: no app, no settings, no log.
 sudo rm -rf "$old_app"
-rm -rf "$HOME/Library/Application Support/Blip-AI" "$log_dir/Blip-AI"
+find "$HOME/Library/Application Support" "$log_dir" -maxdepth 1 -iname '*blip*' -exec rm -rf {} +
 exit 0
