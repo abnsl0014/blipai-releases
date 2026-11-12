@@ -336,53 +336,7 @@ if app_has 'data-missed-action'; then
     # Click Save in the save panel: a sheet on the home window on macOS 15, found as any
     # window of the app with a Save button otherwise. A bare Return went to whichever
     # app was in front (run 16), so it is only the fallback, with Blip brought forward.
-    save_click=$(osa - "$APP_PROCESS" << 'OSA' 2>&1
-on run argv
-  set appName to item 1 of argv
-  tell application "System Events"
-    repeat 20 times
-      -- the app's own windows: a sheet, or a window with a Save button
-      repeat with w in (windows of process appName)
-        try
-          if exists sheet 1 of w then
-            click button "Save" of sheet 1 of w
-            return "clicked Save in a sheet of " & (name of w)
-          end if
-        end try
-        try
-          if exists button "Save" of w then
-            click button "Save" of w
-            return "clicked Save in the window " & (name of w)
-          end if
-        end try
-      end repeat
-      -- macOS can draw the panel from its own service process
-      repeat with p in (processes whose name contains "Save Panel")
-        try
-          repeat with w in (windows of p)
-            if exists button "Save" of w then
-              click button "Save" of w
-              return "clicked Save in " & (name of p)
-            end if
-          end repeat
-        end try
-      end repeat
-      delay 0.5
-    end repeat
-    set seen to ""
-    try
-      repeat with w in (windows of process appName)
-        set seen to seen & "'" & (name of w) & "' (" & (count of sheets of w) & " sheets) "
-      end repeat
-    end try
-    tell process appName to set frontmost to true
-    delay 0.5
-    key code 36
-    return "no Save button found in 10 s (windows: " & seen & "); pressed Return with Blip in front"
-  end tell
-end run
-OSA
-)
+    save_click=$(osa "$here/save-panel.applescript" "$APP_PROCESS" 2>&1)
     pressed="$pressed; $save_click"
     sleep 3
     saved=$(find "$HOME/Documents" "$HOME/Downloads" "$HOME/Desktop" "$HOME" -maxdepth 1 -type f \
