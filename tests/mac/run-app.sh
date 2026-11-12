@@ -142,8 +142,9 @@ sleep 2
 # Auto-detect prefers a real microphone to a virtual default one. Apple-silicon runners
 # have one ("Apple Virtual Sound Device") that hears nothing, so there the test picks
 # BlackHole 2ch, as a user picks a mic in Settings. The app finds a saved mic by its
-# name when its id has changed, so the name is enough. Intel runners have no other
-# mic and test Auto-detect.
+# name when its id has changed, so the name is enough: the name the app lists, which
+# has the connection type that Chromium adds ("BlackHole 2ch (Virtual)"; without it,
+# run 13 found no such mic). Intel runners have no other mic and test Auto-detect.
 mic_mode=auto
 other_inputs=$(SwitchAudioSource -a -t input | grep -vE '^(BlackHole|Null Audio Device)' | paste -sd, -)
 if [ -n "$other_inputs" ]; then
@@ -152,7 +153,7 @@ if [ -n "$other_inputs" ]; then
 import json, sys
 path = sys.argv[1]
 cfg = json.load(open(path))
-cfg.update(selectedMicrophoneId="chosen-in-settings", selectedMicrophoneLabel="BlackHole 2ch")
+cfg.update(selectedMicrophoneId="chosen-in-settings", selectedMicrophoneLabel="BlackHole 2ch (Virtual)")
 json.dump(cfg, open(path, "w"))
 PY
   record INFO "Microphone" "BlackHole 2ch chosen in the app (this runner also has $other_inputs, which hears nothing and which Auto-detect would pick)"
@@ -175,7 +176,7 @@ render_speech "The quick brown fox jumps over the lazy dog near the river bank."
   "Um, so I think we should, uh, move the meeting to next week." \
   "This sentence should never be typed."
 
-# 4a. Push-to-talk: hold Fn, speak, release.
+# 4a. Push-to-talk: hold Fn, speak, release. (After it, the app's log says which mic it used.)
 phrase="The quick brown fox jumps over the lazy dog near the river bank."
 focus_textedit
 before_mute=$(muted)
@@ -191,6 +192,13 @@ t1=$(now_ms)
 judge "Push-to-talk (hold Fn) types into the focused app" "$phrase" "$text" && \
   record INFO "Push-to-talk: Fn released → text in TextEdit" "$((t1 - t0)) ms"
 screenshot push-to-talk
+mic_line=$(grep -a '\[mic\] active mode=' "$(app_log)" 2>/dev/null | tail -n 1 | sed 's/.*\[mic\] active //' | cut -c1-120)
+if [ "$mic_mode" = manual ]; then
+  if grep -q '^mode=manual ' <<< "$mic_line"; then record PASS "Uses the microphone chosen in Settings" "$mic_line"
+  else record FAIL "Uses the microphone chosen in Settings" "app logged: ${mic_line:-nothing}"; fi
+else
+  record INFO "Microphone the app picked" "${mic_line:-not logged}"
+fi
 sleep 2
 after_mute=$(muted)
 record INFO "System audio muted while dictating" "before: $before_mute, during: $during_mute, after: $after_mute"
