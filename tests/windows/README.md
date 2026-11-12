@@ -37,6 +37,13 @@ after sign-in stay on the runner, and emails and tokens are removed from uploade
    in the app, the shortcut shows "You're signed out", and **Sign in** starts signing in.
 5. **Quit**, the key listener exits, and relaunching with the ended session shows sign-in.
 
+For the overlay's buttons (Open Settings, Sign in) it also checks that a real mouse
+click works, separately from what the button does: the test clicks twice with the mouse,
+then posts the same click straight to the window, which skips Windows' mouse-activation
+step. On v0.5.10 only the posted click worked, on both runners: the page handles the
+click, but the real clicks were dropped before it. That check fails until someone
+confirms with a mouse on a real PC either way.
+
 If the runner's virtual mic hears nothing, the dictation checks are skipped with that
 reason rather than failed one by one.
 
@@ -51,7 +58,8 @@ reason rather than failed one by one.
   heard as the mic picking up sound). The report says so.
 - **Keyboard and mouse.** `wtool keys` sends key presses with `SendInput`, as a keyboard
   does; Blip's `WinKeyServer` hook sees them as real. Buttons are clicked with the mouse
-  at their position from UI Automation, after the pointer moves onto them.
+  at their position from UI Automation, after the pointer moves onto them (the test's
+  text box, which stays on top, is minimized first when a home-window button is clicked).
 - **Where the text goes.** `wtool target` is a window with a text box that mirrors its text
   to a file, and logs the keys and focus changes it gets (`target-box-events.txt` in the
   artifact). Before each dictation the test brings it to the front and checks that it is

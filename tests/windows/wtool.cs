@@ -7,6 +7,7 @@
 //   wtool target FILE               a window with a text box; its text is mirrored to FILE.
 //                                   FILE.clear (created by the test) empties it.
 //   wtool focus TITLE               bring the window with that title to the front
+//   wtool minimize TITLE            minimize the window with that title
 //   wtool fg                        title of the window in front
 //   wtool windows PROCESS           visible top-level window titles of a process
 //   wtool uia-text PROCESS          the text of every element in the process's windows
@@ -178,6 +179,17 @@ static class WTool
         return ok;
     }
 
+    static void Minimize(string title)
+    {
+        foreach (var w in TopWindows(null)) {
+            if (w.Value.IndexOf(title, StringComparison.OrdinalIgnoreCase) < 0) continue;
+            ShowWindow(w.Key, 6);   // SW_MINIMIZE
+            Console.WriteLine("minimized " + w.Value);
+            return;
+        }
+        Console.WriteLine("no window titled " + title);
+    }
+
     static void Focus(string title)
     {
         foreach (var w in TopWindows(null)) {
@@ -327,7 +339,10 @@ static class WTool
                     if (!untilGone) { Console.WriteLine("pressed \"" + name + "\" in " + where + " (" + how + ")"); return; }
                     Thread.Sleep(1500);
                     if (!StillShown(root, label)) { Console.WriteLine("pressed \"" + name + "\" in " + where + " (" + how + ")"); return; }
-                    tried.Add(how + ": no effect");
+                    Click(p);   // a person clicks again when nothing happens
+                    Thread.Sleep(1500);
+                    if (!StillShown(root, label)) { Console.WriteLine("pressed \"" + name + "\" in " + where + " (second " + how + "; the first did nothing)"); return; }
+                    tried.Add("two mouse clicks at " + p.X + "," + p.Y + " on " + under + ": no effect");
                     PostClick(top, p);
                     Thread.Sleep(1500);
                     if (!StillShown(root, label)) { Console.WriteLine("pressed \"" + name + "\" in " + where + " (posted click; " + string.Join("; ", tried) + ")"); return; }
@@ -385,6 +400,7 @@ static class WTool
             }
             else if (cmd == "windows" && a.Length == 2) { foreach (var w in TopWindows(Pids(a[1]))) Console.WriteLine(w.Value); }
             else if (cmd == "uia-text" && a.Length == 2) UiaText(a[1]);
+            else if (cmd == "minimize" && a.Length == 2) Minimize(a[1]);
             else if (cmd == "uia-press" && (a.Length == 3 || (a.Length == 4 && a[3] == "--until-gone"))) UiaPress(a[1], a[2], a.Length == 4);
             else if (cmd == "screenshot" && a.Length == 2) Screenshot(a[1]);
             else if (cmd == "speak-file" && a.Length == 3) {

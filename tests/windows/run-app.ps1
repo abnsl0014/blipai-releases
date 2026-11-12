@@ -64,6 +64,19 @@ function Get-BlipHistory {   # status, timestamp and text of each history item, 
   $json = python -c "import json, sys; h = json.load(open(sys.argv[1], encoding='utf-8')).get('transcriptionHistory') or []; print(json.dumps([{'status': r.get('status') or 'ok', 'timestamp': str(r.get('timestamp') or ''), 'text': r.get('text') or ''} for r in h if isinstance(r, dict)]))" $c 2>$null
   if ($json) { return @($json | ConvertFrom-Json) } else { return @() }
 }
+# Did a real mouse click work on an overlay button, or only a click posted to the window
+# (wtool uia-press --until-gone says which)? Runs 9 on both runners: only the posted one.
+function Record-OverlayClick([string]$Label, [string]$Pressed) {
+  $check = "Overlay's '$Label' button takes a mouse click"
+  $last = ($Pressed -split 'after releasing them: ')[-1]   # the attempt that counted
+  if ($last -match 'pressed "[^"]*" in [^(]*\((second )?mouse click') {
+    Record PASS $check "$($last -replace '^.*\((.*)\)$', '$1')$(if ($last -ne $Pressed) { ' (after the shortcut keys were released; not while they were held)' })"
+  } elseif ($last -match 'two mouse clicks[^;]*: no effect' -and $last -match 'pressed "') {
+    Record FAIL $check "two mouse clicks on it did nothing, then a click posted straight to the window worked: the page handles the click, but the real ones were dropped before it (the overlay window is focusable: false, and Windows asks such a window whether to take a click). Check by hand: click it with a mouse on a Windows PC"
+  } elseif ($Pressed) {
+    Record INFO $check $Pressed
+  }
+}
 function Log-Has([string]$Pattern) { $l = App-Log; $l -and (Select-String -Path $l -Pattern $Pattern -Quiet) }
 function Collect-CrashReports {
   Get-ChildItem (Join-Path $env:APPDATA) -Recurse -Depth 4 -Filter '*.dmp' -ErrorAction SilentlyContinue |
@@ -222,6 +235,9 @@ if (App-Has 'data-missed-action') {
   if ($profilesOff) { Set-NetFirewallProfile -Name $profilesOff -Enabled False }
   if ($missed) {
     Record PASS 'Failed transcription is kept as a Missed item' "overlay: $((Ui-Text 'missed-error') -replace '^(.{0,140}).*$', '$1')"
+    # The test's text box stays on top of every window; move it out of the way so the
+    # Missed item's buttons can be clicked like a person would (Focus-Target restores it).
+    W minimize 'Blip Test Target' | Out-Null
     Start-Process -FilePath $env:APP_EXE | Out-Null       # brings the main window up
     Start-Sleep -Seconds 3
     $before = Get-Date
@@ -276,6 +292,7 @@ if (App-Has 'id="status-action"') {
   }
   Start-Sleep -Seconds 3
   Ui-Dump 'open-settings'
+  Record-OverlayClick 'Open Settings' "$pressed"
   # The app logs "[mic] open-settings from=overlay" when the button is used.
   if ("$pressed" -match 'pressed "' -and ((Log-Has 'open-settings from=overlay') -or (Ui-Text 'open-settings') -match '(?i)test microphone')) { Record PASS '''Open Settings'' opens the microphone settings' "$pressed" }
   else { Record FAIL '''Open Settings'' opens the microphone settings' "press: $pressed; the app didn't log it; windows: $(App-Windows); overlay after: $((Ui-Text 'open-settings') -replace '\|Blip AI\|.*$', '')" }
@@ -335,9 +352,10 @@ json.dump(cfg, open(p, 'w', encoding='utf-8'))" (App-Config)
   }
   if ($notice) {
     Record PASS "Session ended: 'You're signed out' notice" $notice
+    Record-OverlayClick 'Sign in' "$pressed"
     Start-Sleep -Seconds 6
     # The app logs "[auth] sign-in started from=overlay" and opens its sign-in window.
-    if ("$pressed" -match 'pressed "' -and ((Log-Has 'sign-in started') -or (App-Windows) -match '(?i)welcome|sign')) { Record PASS "'Sign in' starts signing in again" "windows: $(App-Windows)" }
+    if ("$pressed" -match 'pressed "' -and ((Log-Has 'sign-in started') -or (App-Windows) -match '(?i)welcome|sign')) { Record PASS "'Sign in' starts signing in again" "$pressed; windows: $(App-Windows)" }
     else { Ui-Dump 'after-sign-in-press'; Record FAIL "'Sign in' starts signing in again" "press: $pressed; the app didn't log it; windows: $(App-Windows); overlay after: $((Ui-Text 'after-sign-in-press') -replace '\|Blip AI\|.*$', '')" }
   } else {
     Record FAIL "Session ended: 'You're signed out' notice" "windows: $(App-Windows); text: $(Ui-Text 'signed-out')"
