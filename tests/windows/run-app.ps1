@@ -79,7 +79,7 @@ function Record-OverlayClick([string]$Label, [string]$Pressed) {
 }
 function Log-Has([string]$Pattern) { $l = App-Log; $l -and (Select-String -Path $l -Pattern $Pattern -Quiet) }
 function Collect-CrashReports {
-  Get-ChildItem (Join-Path $env:APPDATA) -Recurse -Depth 4 -Filter '*.dmp' -ErrorAction SilentlyContinue |
+  Get-ChildItem $env:APPDATA -Recurse -Depth 4 -Filter '*.dmp' -ErrorAction SilentlyContinue |
     Where-Object { $_.FullName -match 'blip' -and $_.LastWriteTime -gt (Get-Item (Join-Path $OUT '.started')).LastWriteTime } |
     ForEach-Object { Copy-Item $_.FullName $OUT }
 }
