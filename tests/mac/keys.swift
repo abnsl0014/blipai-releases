@@ -11,11 +11,15 @@
 //   keys tap escape         press and release one key
 //   keys watch 5            print every key event a session event tap sees for 5 s
 //   keys access             print whether this process may listen to and post events
+//   keys mic                print whether this process may use the microphone
+//   keys responsible        print the process macOS charges this one's privacy checks to
 //
 // Modifiers (fn, cmd, ctrl, alt, shift) are sent as flagsChanged events with the
 // matching flag, which is what a real keyboard produces and what MacKeyServer reads.
+import AVFoundation
 import ApplicationServices
 import CoreGraphics
+import Darwin
 import Foundation
 
 let modifiers: [String: (code: CGKeyCode, flag: CGEventFlags)] = [
@@ -111,6 +115,24 @@ case ("chord", 2):
 case ("watch", 2): watch(seconds: Double(args[1]) ?? 5)
 case ("access", 1):
   print("listen=\(CGPreflightListenEventAccess()) post=\(CGPreflightPostEventAccess()) accessibility=\(AXIsProcessTrusted())")
+case ("mic", 1):
+  switch AVCaptureDevice.authorizationStatus(for: .audio) {
+  case .authorized: print("authorized")
+  case .denied: print("denied")
+  case .restricted: print("restricted")
+  case .notDetermined: print("not-determined")
+  @unknown default: print("unknown")
+  }
+case ("responsible", 1):
+  // Private but stable libsystem call; TCC uses the same answer.
+  typealias Responsible = @convention(c) (pid_t) -> pid_t
+  guard let symbol = dlsym(UnsafeMutableRawPointer(bitPattern: -2), "responsibility_get_pid_responsible_for_pid") else {
+    fail("responsibility_get_pid_responsible_for_pid not found")
+  }
+  let pid = unsafeBitCast(symbol, to: Responsible.self)(getpid())
+  var path = [CChar](repeating: 0, count: 4 * Int(MAXPATHLEN))
+  guard proc_pidpath(pid, &path, UInt32(path.count)) > 0 else { fail("no path for pid \(pid)") }
+  print(String(cString: path))
 default:
-  fail("usage: keys down|up|tap KEY | chord K1+K2 | watch SECONDS | access")
+  fail("usage: keys down|up|tap KEY | chord K1+K2 | watch SECONDS | access | mic | responsible")
 }
