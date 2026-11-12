@@ -42,8 +42,36 @@ foreach ($try in 1, 2) {
 }
 if ($code -notin 0, 1641, 3010) { Record FAIL 'Install VB-CABLE (virtual audio)' "choco exit ${code}: $((Get-Content $chocoLog -Tail 5) -join ' ')" }
 choco install sox.portable -y --no-progress *> (Join-Path $OUT 'choco-sox.txt')
+
+# The package drives VB-CABLE's setup window with AutoHotkey. If no CABLE device exists
+# afterwards, trust VB-Audio's driver certificate (so Windows doesn't ask) and run the
+# setup's own silent install.
+function Cable-Endpoints { @(Get-PnpDevice -Class AudioEndpoint -ErrorAction SilentlyContinue | Where-Object { $_.FriendlyName -like '*CABLE*' }) }
+if ((Cable-Endpoints).Count -lt 2) {
+  $tools = 'C:\ProgramData\chocolatey\lib\vb-cable\tools'
+  $cat = Get-ChildItem $tools -Filter '*.cat' -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
+  if ($cat) {
+    $cert = (Get-AuthenticodeSignature $cat.FullName).SignerCertificate
+    if ($cert) {
+      $store = New-Object System.Security.Cryptography.X509Certificates.X509Store 'TrustedPublisher', 'LocalMachine'
+      $store.Open('ReadWrite'); $store.Add($cert); $store.Close()
+    }
+  }
+  $setupExe = Get-ChildItem $tools -Filter 'VBCABLE_Setup_x64.exe' -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
+  if ($setupExe) {
+    $p = Start-Process -FilePath $setupExe.FullName -ArgumentList '-i', '-h' -PassThru
+    if (-not $p.WaitForExit(120000)) { $p.Kill() }
+    Record INFO 'VB-CABLE silent setup' "exit $($p.ExitCode)"
+  }
+}
 Restart-Service -Name Audiosrv -Force -ErrorAction SilentlyContinue
 Start-Sleep -Seconds 5
+@(
+  '--- AudioEndpoint devices'; Get-PnpDevice -Class AudioEndpoint -ErrorAction SilentlyContinue | ForEach-Object { "$($_.Status)  $($_.FriendlyName)" }
+  '--- MEDIA devices'; Get-PnpDevice -Class MEDIA -ErrorAction SilentlyContinue | ForEach-Object { "$($_.Status)  $($_.FriendlyName)" }
+  '--- Win32_SoundDevice'; Get-CimInstance Win32_SoundDevice -ErrorAction SilentlyContinue | ForEach-Object { "$($_.Status)  $($_.Name)" }
+) | Set-Content -Path (Join-Path $OUT 'audio-endpoints.txt')
+Record INFO 'Audio endpoints' ((Get-PnpDevice -Class AudioEndpoint -ErrorAction SilentlyContinue | ForEach-Object { $_.FriendlyName }) -join '; ')
 
 # Make CABLE the default playback and recording device (AudioDeviceCmdlets runs in
 # Windows PowerShell 5.1).
@@ -61,7 +89,7 @@ try {
   Get-AudioDevice -List | ForEach-Object { "$($_.Type): $($_.Name)$(if ($_.Default) { ' (default)' })" }
 } catch { "AudioDeviceCmdlets: $_" }
 '@
-$devices | Set-Content -Path (Join-Path $OUT 'audio-devices.txt')
+@($devices) + '' | Set-Content -Path (Join-Path $OUT 'audio-devices.txt')
 Write-Host ($devices -join "`n")
 Record INFO 'Audio devices' (($devices | Where-Object { $_ -match 'default|AudioDeviceCmdlets' }) -join '; ')
 
@@ -78,7 +106,8 @@ Render-Speech @($phrase)
 $sox = (Get-Command sox -ErrorAction SilentlyContinue).Source
 $wav = Join-Path $OUT 'loopback.wav'
 if ($sox) {
-  $rec = Start-Process -FilePath $sox -ArgumentList '-q', '-t', 'waveaudio', 'default', "`"$wav`"", 'trim', '0', '5' -PassThru -NoNewWindow
+  $rec = Start-Process -FilePath $sox -ArgumentList '-q', '-t', 'waveaudio', 'default', "`"$wav`"", 'trim', '0', '5' -PassThru -NoNewWindow `
+    -RedirectStandardError (Join-Path $OUT 'sox-rec.txt')
   Start-Sleep -Seconds 1
   Speak $phrase
   if (-not $rec.WaitForExit(15000)) { $rec.Kill() }

@@ -8,8 +8,8 @@
 #      (Shift+Alt+Z), history; and, when the app has them (0.5.10+): the "No sound"
 #      notice and Open Settings, a failed transcription kept as a Missed item with
 #      Save audio and Retry
-#   5. quit
-#   6. (0.5.10+) the session ends: the "You're signed out" notice and Sign in
+#   5. (0.5.10+) the session ends while the app runs: "You're signed out" and Sign in
+#   6. quit; relaunching with the ended session shows sign-in
 . "$PSScriptRoot/lib.ps1"
 New-Item -ItemType File -Force -Path (Join-Path $OUT '.started') | Out-Null
 
@@ -19,7 +19,13 @@ $SUPABASE_KEY = if ($env:SUPABASE_KEY) { $env:SUPABASE_KEY } else { 'sb_publisha
 $repo = if ($env:REPO) { $env:REPO } else { $env:GITHUB_REPOSITORY }
 $asar = Join-Path $env:INSTALL_DIR 'resources\app.asar'
 function App-Has([string]$s) { [bool](Select-String -Path $asar -SimpleMatch -Pattern $s -Quiet) }
-function Key-Server-Running { [bool](Get-Process -Name WinKeyServer -ErrorAction SilentlyContinue) }
+# The key listener: a helper process the app starts from its install folder (keyspy's
+# WinKeyServer.exe). Matched by folder, since the name is the package's to choose.
+function Key-Server-Processes {
+  @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |
+    Where-Object { $_.ExecutablePath -and $_.ExecutablePath -like "$env:INSTALL_DIR*" -and $_.Name -notlike 'Blip-AI*' })
+}
+function Key-Server-Running { [bool](Key-Server-Processes | Where-Object { $_.Name -match 'key' }) }
 function Signed-In { $c = App-Config; $c -and ((Get-Content -Raw $c | ConvertFrom-Json).authToken) }
 function Ui-Dump([string]$Name) {
   $file = Join-Path $OUT "ui-$Name.txt"
@@ -108,8 +114,9 @@ Launch | Out-Null
 Start-Sleep -Seconds 15
 Screenshot 'relaunch-signed-in'
 if (App-Running) { Record PASS 'Relaunches signed in' "windows: $(App-Windows)" } else { Record FAIL 'Relaunches signed in' 'the app exited'; Collect-CrashReports; exit 0 }
-if (Wait-Until 20 { Key-Server-Running }) { Record PASS 'Key listener running (WinKeyServer)' '' }
-else { Record FAIL 'Key listener running (WinKeyServer)' 'not started: the Ctrl+Win shortcut can''t work' }
+$helpers = { (Key-Server-Processes | ForEach-Object { $_.Name }) -join ', ' }
+if (Wait-Until 20 { Key-Server-Running }) { Record PASS 'Key listener running (WinKeyServer)' (& $helpers) }
+else { Record FAIL 'Key listener running (WinKeyServer)' "not started: the Ctrl+Win shortcut can't work. Helper processes: $(& $helpers)" }
 Ui-Dump 'home'
 
 # --- 4. Dictation ---------------------------------------------------------------------
@@ -241,21 +248,13 @@ else { Record FAIL 'Dictations saved to history' "$(@(History).Count) entries" }
 $log = App-Log
 if ($log) { Select-String -Path $log -Pattern '\[(stt|paste)-timing\]' | ForEach-Object { $_.Line } | Set-Content (Join-Path $OUT 'dictation-timing.txt') }
 
-# --- 5. Quit ----------------------------------------------------------------------------
-$how = Stop-App
-Record INFO 'Stopped' "$how (closing the window keeps Blip in the tray)"
-Start-Sleep -Seconds 5
-if (Key-Server-Running) {
-  Record WARN 'Key listener exits with the app' "WinKeyServer still running 5 s after the app was $how"
-  Get-Process WinKeyServer | Stop-Process -Force
-} else { Record PASS 'Key listener exits with the app' "after the app was $how" }
-Collect-CrashReports
-
-# End this session on the server (scope=local: only this runner's session).
+# --- 5. The session ends while the app runs: "Sign in" notice (0.5.10+) ---------
+# End this session on the server (scope=local: only this runner's session), then give
+# the running app an expired access token, as after a long sleep. electron-store reads
+# its file on every access, so the app sees it at the next shortcut press.
 try { Invoke-RestMethod -Method Post -Uri "$SUPABASE_URL/auth/v1/logout?scope=local" -TimeoutSec 30 -Headers @{ apikey = $SUPABASE_KEY; Authorization = "Bearer $access" } | Out-Null } catch { }
-
-# --- 6. The session ended: "Sign in" notice (0.5.10+) --------------------------------
-if (App-Has 'id="status-action"') {
+$hasSignInNotice = App-Has 'id="status-action"'
+if ($hasSignInNotice) {
   $cfgPath = App-Config
   $cfg = Get-Content -Raw $cfgPath | ConvertFrom-Json
   $b64 = { param($o) [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes(($o | ConvertTo-Json -Compress))).TrimEnd('=').Replace('+', '-').Replace('/', '_') }
@@ -268,8 +267,6 @@ if (App-Has 'id="status-action"') {
   } catch { }
   $cfg.authToken = (& $b64 @{ alg = 'HS256'; typ = 'JWT' }) + '.' + (& $b64 $payload) + '.expired'
   $cfg | ConvertTo-Json -Depth 20 | Set-Content -Path $cfgPath -Encoding utf8
-  Launch | Out-Null
-  Start-Sleep -Seconds 15
   Focus-Target
   W keys down ctrl | Out-Null; W keys down win | Out-Null
   Start-Sleep -Milliseconds 2500
@@ -279,18 +276,38 @@ if (App-Has 'id="status-action"') {
   Ui-Dump 'signed-out-after'
   $notice = @(Get-Content (Join-Path $OUT 'ui-signed-out.txt'), (Join-Path $OUT 'ui-signed-out-after.txt') -ErrorAction SilentlyContinue) -match '(?i)signed out|sign in to keep' | Select-Object -First 1
   if ($notice) {
-    Record PASS 'Ended session: ''You''re signed out'' notice' $notice
+    Record PASS "Session ended: 'You're signed out' notice" $notice
     $browsersBefore = @(Get-Process msedge, chrome, firefox -ErrorAction SilentlyContinue).Count
     $pressed = W uia-press $APP_PROCESS 'Sign in'
     Start-Sleep -Seconds 6
     $browser = @(Get-Process msedge, chrome, firefox -ErrorAction SilentlyContinue).Count -gt $browsersBefore
-    if ("$pressed" -like 'pressed*' -and ($browser -or (App-Windows) -match '(?i)welcome')) { Record PASS '''Sign in'' starts signing in again' "opened $(if ($browser) { 'the browser' } else { 'onboarding' })" }
-    else { Record FAIL '''Sign in'' starts signing in again' "press: $pressed; windows: $(App-Windows)" }
+    $opened = if ($browser) { 'the browser' } else { 'onboarding' }
+    if ("$pressed" -like 'pressed*' -and ($browser -or (App-Windows) -match '(?i)welcome')) { Record PASS "'Sign in' starts signing in again" "opened $opened" }
+    else { Record FAIL "'Sign in' starts signing in again" "press: $pressed; windows: $(App-Windows)" }
   } else {
-    Record FAIL 'Ended session: ''You''re signed out'' notice' "windows: $(App-Windows); text: $(Ui-Text 'signed-out')"
+    Record FAIL "Session ended: 'You're signed out' notice" "windows: $(App-Windows); text: $(Ui-Text 'signed-out')"
   }
-  Stop-App | Out-Null
+  if ((Target-Text).Trim()) { Record FAIL 'Signed out: nothing is typed' "typed: $(Target-Text)" }
 } else {
-  Record SKIP 'Ended session: ''You''re signed out'' notice' 'this version has no sign-in notice (added in 0.5.10)'
+  Record SKIP "Session ended: 'You're signed out' notice" 'this version has no sign-in notice (added in 0.5.10)'
+}
+
+# --- 6. Quit ------------------------------------------------------------------------
+$how = Stop-App
+Record INFO 'Stopped' "$how (closing the window keeps Blip in the tray)"
+Start-Sleep -Seconds 5
+if (Key-Server-Running) {
+  Record WARN 'Key listener exits with the app' "WinKeyServer still running 5 s after the app was $how"
+  Key-Server-Processes | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
+} else { Record PASS 'Key listener exits with the app' "after the app was $how" }
+Collect-CrashReports
+
+# Relaunching with that ended session asks the user to sign in again.
+if ($hasSignInNotice) {
+  Launch | Out-Null
+  Start-Sleep -Seconds 15
+  if ((App-Windows) -match '(?i)welcome') { Record PASS 'Relaunch with an ended session shows sign-in' "windows: $(App-Windows)" }
+  else { Record FAIL 'Relaunch with an ended session shows sign-in' "windows: $(App-Windows)" }
+  Stop-App | Out-Null
 }
 exit 0
