@@ -82,8 +82,11 @@ render_speech() {  # render_speech "text"... → synthesize ahead of time
   done
 }
 speak() {  # speak "text" → plays it into BlackHole 2ch and returns when it has finished
-  render_speech "$1"
-  with_timeout 30 sox -q "$(speech_file "$1")" -t coreaudio "BlackHole 2ch"
+  speak_to "BlackHole 2ch" "$1"
+}
+speak_to() {  # speak_to DEVICE "text" → the same, into another virtual device
+  render_speech "$2"
+  with_timeout 30 sox -q "$(speech_file "$2")" -t coreaudio "$1"
 }
 
 app_running() { pgrep -x "$APP_PROCESS" > /dev/null; }

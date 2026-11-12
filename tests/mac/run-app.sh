@@ -4,8 +4,12 @@
 #   2. sign-in through the blipai://auth link the website opens (needs the test account)
 #   3. relaunch signed in: home window, Fn key listener running
 #   4. dictation into TextEdit: push-to-talk, hands-free, filler words, Esc to cancel,
-#      Paste last transcript, system audio muted while recording and restored after
+#      Paste last transcript, system audio muted while recording and restored after,
+#      dictating after the speakers change and after a new default mic appears, and,
+#      when the app has them (0.5.10+): the "No sound" notice and its Open Settings,
+#      a failed transcription kept as a Missed item with Save audio and Retry
 #   5. quit: the app and its key listener exit
+#   6. (0.5.10+) the session ends: the "You're signed out" notice and its Sign in
 # Speech comes from `say` into the virtual mic, keys from tests/mac/keys.swift.
 set -uo pipefail
 here="$(cd "$(dirname "$0")" && pwd)"
@@ -222,6 +226,127 @@ else
   judge "Paste last transcript (Cmd+Ctrl+V)" "$last_text" "$pasted" 90
 fi
 
+# --- 4f. Audio devices change while the app runs (no restart) ------------------
+# Switching speakers, or a headset becoming the default mic, between dictations.
+outputs_before=$(SwitchAudioSource -c -t output)
+if SwitchAudioSource -t output -s "Null Audio Device" > /dev/null 2>&1; then
+  phrase="The weather today is sunny with a light breeze from the west."
+  focus_textedit
+  "$KEYS" down fn; sleep 0.6; speak "$phrase"; sleep 0.8; "$KEYS" up fn
+  judge "Dictates after the speakers change (no restart)" "$phrase" "$(wait_text 30)"
+  SwitchAudioSource -t output -s "$outputs_before" > /dev/null 2>&1
+else
+  record SKIP "Dictates after the speakers change (no restart)" "no second output device on this runner"
+fi
+SwitchAudioSource -t input -s "BlackHole 16ch" > /dev/null 2>&1
+phrase="Our new office opens on the first floor next month."
+focus_textedit
+"$KEYS" down fn; sleep 0.6; speak_to "BlackHole 16ch" "$phrase"; sleep 0.8; "$KEYS" up fn
+judge "Follows a new default microphone (no restart)" "$phrase" "$(wait_text 30)"
+SwitchAudioSource -t input -s "BlackHole 2ch" > /dev/null 2>&1
+record SKIP "First dictation after the Mac wakes from sleep" "a GitHub runner can't sleep and wake; check by hand"
+record SKIP "Real AirPods or a USB mic plugged in or out mid-dictation" "no Bluetooth or USB hardware on a runner; the default-mic switch above is the closest check"
+
+# Features newer than 0.5.9 are tested only when the installed app has them.
+asar="$APP/Contents/Resources/app.asar"
+app_has() { grep -qaF -- "$1" "$asar"; }
+press() { with_timeout 70 osascript "$here/ui-press.applescript" "$APP_PROCESS" "$1" 2>&1; }
+newest_record() {  # prints "<status> <timestamp> <text…>" of the newest history record
+  python3 -c '
+import json, sys
+items = json.load(open(sys.argv[1])).get("transcriptionHistory", [])
+r = items[0] if items else {}
+print(r.get("status") or "ok", r.get("timestamp") or 0, (r.get("text") or "").replace("\n", " "))
+' "$(app_config)" 2>/dev/null
+}
+
+# --- 4g. Silent microphone: "No sound" notice with "Open Settings" -------------
+if app_has 'id="status-action"'; then
+  focus_textedit
+  "$KEYS" down fn
+  sleep 4.5            # digital silence from the virtual mic; the app warns after 2.5 s
+  ui_dump no-sound
+  screenshot no-sound
+  notice=$(grep -m1 -iE "no sound|can't hear|couldn't hear|is muted" "$OUT/ui-no-sound.txt")
+  if [ -n "$notice" ]; then record PASS "Silent mic: 'No sound' notice" "$(cut -c1-120 <<< "$notice")"
+  else record FAIL "Silent mic: 'No sound' notice" "overlay showed: $(grep -v '^== window' "$OUT/ui-no-sound.txt" | head -n 6 | tr '\n' '|' | cut -c1-200)"; fi
+  pressed=$(press "Open Settings")
+  sleep 3
+  "$KEYS" up fn
+  sleep 2
+  ui_dump open-settings
+  if grep -q '^pressed' <<< "$pressed" && grep -qiE "test microphone|microphone" "$OUT/ui-open-settings.txt"; then
+    record PASS "'Open Settings' opens the microphone settings" "$(cut -c1-80 <<< "$pressed")"
+  else
+    record FAIL "'Open Settings' opens the microphone settings" "press: $(cut -c1-100 <<< "$pressed"); windows: $(app_windows)"
+  fi
+  if textedit_has_text; then record FAIL "Silent dictation types nothing" "typed: \"$(textedit_text | cut -c1-80)\""
+  else record PASS "Silent dictation types nothing" ""; fi
+  osa -e 'tell application "System Events" to key code 53' > /dev/null 2>&1 || true   # close the settings sheet
+else
+  record SKIP "Silent mic: 'No sound' notice" "this version has no microphone notices (added in 0.5.10)"
+fi
+
+# --- 4h. Failed transcription: a "Missed" item with Retry and Save audio --------
+if app_has 'data-missed-action'; then
+  ips=$( (dig +short A proxy.tryblipai.com; dig +short A api.groq.com; dig +short AAAA proxy.tryblipai.com; dig +short AAAA api.groq.com) \
+    | grep -E '^[0-9a-f.:]+$' | grep -E '[.:]' | sort -u | xargs)
+  printf 'block return out quick proto { tcp udp } to { %s }\n' "$(sed 's/ /, /g' <<< "$ips")" > "$RUNNER_TEMP/pf-block.conf"
+  sudo pfctl -E > /dev/null 2>&1
+  sudo pfctl -f "$RUNNER_TEMP/pf-block.conf" > /dev/null 2>&1
+  for ip in $ips; do sudo pfctl -k 0.0.0.0/0 -k "$ip" > /dev/null 2>&1; sudo pfctl -k ::/0 -k "$ip" > /dev/null 2>&1; done
+  record INFO "Transcription servers blocked" "proxy.tryblipai.com and api.groq.com ($ips)"
+  phrase="Remember to water the plants on Saturday morning."
+  focus_textedit
+  "$KEYS" down fn; sleep 0.6; speak "$phrase"; sleep 0.8; "$KEYS" up fn
+  missed_ts=""
+  deadline=$(( $(date +%s) + 60 ))
+  while [ "$(date +%s)" -lt "$deadline" ]; do
+    read -r st ts _ <<< "$(newest_record)"
+    if [ "$st" = "missed" ]; then missed_ts="$ts"; break; fi
+    sleep 1
+  done
+  ui_dump missed-error
+  sudo pfctl -f /etc/pf.conf > /dev/null 2>&1   # back online
+  if [ -n "$missed_ts" ]; then
+    record PASS "Failed transcription is kept as a Missed item" "overlay: $(grep -v '^== window' "$OUT/ui-missed-error.txt" | grep -iE 'fail|couldn|error|missed|retry|connect|internet' | head -n 1 | cut -c1-100)"
+    open -a "$APP"; sleep 3
+    touch "$OUT/.before-save"
+    pressed=$(press "Save audio")
+    sleep 2
+    "$KEYS" tap return    # the Save panel's default button
+    sleep 3
+    saved=$(find "$HOME/Documents" "$HOME/Downloads" "$HOME/Desktop" "$HOME" -maxdepth 1 -type f \
+              \( -name '*.wav' -o -name '*.mp3' \) -newer "$OUT/.before-save" 2>/dev/null | head -n 1)
+    if [ -n "$saved" ] && [ "$(stat -f %z "$saved")" -gt 10000 ]; then
+      record PASS "Missed item: Save audio writes the recording" "$(basename "$saved"), $(stat -f %z "$saved") bytes, $(afinfo "$saved" 2>/dev/null | grep -m1 'estimated duration' | sed 's/.*: //')"
+    else
+      record FAIL "Missed item: Save audio writes the recording" "press: $(cut -c1-80 <<< "$pressed"); no new .wav/.mp3 in Documents, Downloads, Desktop or home"
+    fi
+    pressed=$(press "Retry")
+    retried=""
+    deadline=$(( $(date +%s) + 60 ))
+    while [ "$(date +%s)" -lt "$deadline" ]; do
+      retried=$(python3 -c '
+import json, sys
+items = json.load(open(sys.argv[1])).get("transcriptionHistory", [])
+r = next((x for x in items if str(x.get("timestamp")) == sys.argv[2]), None)
+print("" if r is None or r.get("status") == "missed" else (r.get("text") or "").replace("\n", " "))
+' "$(app_config)" "$missed_ts" 2>/dev/null)
+      [ -n "$retried" ] && break
+      sleep 1
+    done
+    if [ -n "$retried" ]; then judge "Missed item: Retry transcribes it" "$phrase" "$retried"
+    else record FAIL "Missed item: Retry transcribes it" "press: $(cut -c1-80 <<< "$pressed"); still Missed after 60 s"; fi
+  else
+    read -r st ts text <<< "$(newest_record)"
+    record FAIL "Failed transcription is kept as a Missed item" "newest history item: $st \"$(cut -c1-80 <<< "$text")\"; overlay: $(grep -v '^== window' "$OUT/ui-missed-error.txt" | head -n 4 | tr '\n' '|' | cut -c1-160)"
+  fi
+  osa -e 'tell application "TextEdit" to set text of document 1 to ""' > /dev/null 2>&1 || true
+else
+  record SKIP "Failed transcription is kept as a Missed item" "this version has no Missed items (added in 0.5.10)"
+fi
+
 # What the app logged about each dictation (release builds log only these lines).
 log=$(app_log)
 if [ -n "$log" ]; then
@@ -251,7 +376,57 @@ if key_server_running; then record FAIL "Key listener exits with the app" "MacKe
 else record PASS "Key listener exits with the app" ""; fi
 collect_crash_reports
 
-# End this session so its refresh token stops working (the logs are public).
+# End this session on the server so its refresh token stops working (the logs are public).
+# scope=local: only this runner's session, never the account's other devices.
 curl -sS --max-time 30 -o /dev/null -X POST "$SUPABASE_URL/auth/v1/logout?scope=local" \
   -H "apikey: $SUPABASE_KEY" -H "Authorization: Bearer $access" || true
+
+# --- 6. The session ended: "Sign in" notice (0.5.10+) --------------------------
+# What a user sees when their session can no longer be renewed. The server side is
+# already ended above; the app still holds an access token that is valid for up to an
+# hour, so give it an expired one, as after a long sleep.
+if app_has 'id="status-action"'; then
+  python3 - "$(app_config)" << 'PY'
+import base64, json, sys, time
+path = sys.argv[1]
+cfg = json.load(open(path))
+b64 = lambda d: base64.urlsafe_b64encode(json.dumps(d).encode()).rstrip(b"=").decode()
+token = cfg.get("authToken") or ""
+try:
+    part = token.split(".")[1]
+    payload = json.loads(base64.urlsafe_b64decode(part + "=" * (-len(part) % 4)))
+except Exception:
+    payload = {}
+payload["exp"] = int(time.time()) - 3600
+cfg["authToken"] = b64({"alg": "HS256", "typ": "JWT"}) + "." + b64(payload) + ".expired"
+json.dump(cfg, open(path, "w"))
+PY
+  launch
+  sleep 15
+  focus_textedit
+  "$KEYS" down fn
+  sleep 2.5
+  ui_dump signed-out
+  "$KEYS" up fn
+  sleep 2
+  ui_dump signed-out-after
+  notice=$(cat "$OUT/ui-signed-out.txt" "$OUT/ui-signed-out-after.txt" | grep -m1 -iE "signed out|sign in to keep")
+  if [ -n "$notice" ]; then
+    record PASS "Ended session: 'You're signed out' notice" "$(cut -c1-100 <<< "$notice")"
+    pressed=$(press "Sign in")
+    sleep 6
+    record INFO "After pressing 'Sign in'" "$(cut -c1-60 <<< "$pressed"); app windows: $(app_windows); browser running: $(pgrep -lx Safari > /dev/null && echo Safari || echo none)"
+    if grep -q '^pressed' <<< "$pressed" && { pgrep -x Safari > /dev/null || app_windows | grep -qi welcome; }; then
+      record PASS "'Sign in' starts signing in again" "opened $(pgrep -x Safari > /dev/null && echo 'the browser' || echo 'onboarding')"
+    else
+      record FAIL "'Sign in' starts signing in again" "press: $(cut -c1-80 <<< "$pressed"); windows: $(app_windows)"
+    fi
+  else
+    record FAIL "Ended session: 'You're signed out' notice" "app windows: $(app_windows); text: $(grep -v '^== window' "$OUT/ui-signed-out.txt" | head -n 5 | tr '\n' '|' | cut -c1-200)"
+  fi
+  if textedit_has_text; then record FAIL "Signed out: nothing is typed" "typed: \"$(textedit_text | cut -c1-80)\""; fi
+  quit_app || pkill -9 -x "$APP_PROCESS"
+else
+  record SKIP "Ended session: 'You're signed out' notice" "this version has no sign-in notice (added in 0.5.10)"
+fi
 exit 0

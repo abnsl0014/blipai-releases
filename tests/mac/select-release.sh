@@ -2,6 +2,7 @@
 # Picks the release to test and downloads its Mac assets into $DL.
 #   REQUESTED_TAG empty → the latest published release (what users and the auto-updater get)
 #   REQUESTED_TAG=v0.5.10 → that release, drafts included, so a build can be tested before publishing
+#   or, on a push, a "Test-tag: v0.5.10" line in the commit message
 set -euo pipefail
 source "$(dirname "$0")/lib.sh"
 
@@ -10,6 +11,9 @@ DL="${DL:-$RUNNER_TEMP/release}"
 mkdir -p "$DL"
 
 TAG="${REQUESTED_TAG:-}"
+if [ -z "$TAG" ]; then   # a push whose message has a "Test-tag: v0.5.10" line
+  TAG=$(grep -oE '^Test-tag: *v[0-9][^ ]*' <<< "${COMMIT_MESSAGE:-}" | head -n 1 | sed 's/^Test-tag: *//')
+fi
 if [ -z "$TAG" ]; then
   TAG=$(retry gh release view -R "$REPO" --json tagName -q .tagName)
 fi

@@ -14,7 +14,9 @@ Mac included, on public repos.
   updater.
 - **By hand.** Actions → **Mac release test** → **Run workflow**. Enter a tag such as
   `v0.5.10` to test a draft before you publish it, or leave it empty for the latest release.
-- **When the test itself changes** (`tests/mac/**` or the workflow).
+- **When the test itself changes** (`tests/mac/**` or the workflow). A line
+  `Test-tag: v0.5.10` in the commit message makes that run test the given tag (a draft
+  works) instead of the latest release.
 
 ## Setup: a test account
 
@@ -61,8 +63,20 @@ sign-in and dictation are skipped with a warning, and everything else still runs
    - Esc cancels a hands-free dictation
    - Paste last transcript (Cmd+Ctrl+V)
    - system audio is muted while recording and restored after
+   - dictating after the speakers change, and after a new default mic appears (as when
+     AirPods connect), without restarting the app
+   - on versions that have them (0.5.10+): a silent mic shows "No sound" and its
+     **Open Settings** opens the microphone settings; a dictation whose transcription
+     fails (the transcription servers are blocked for a moment) becomes a **Missed**
+     item whose **Save audio** writes the recording and whose **Retry** transcribes it
    - the dictations are saved to history
 5. **Quit.** The app quits and its key listener exits with it.
+6. **Session ended (0.5.10+).** With the session ended on the server and an expired
+   token in the app, pressing Fn shows "You're signed out", and **Sign in** starts
+   signing in again.
+
+Not covered, because a runner has no such hardware: the first dictation after the Mac
+wakes from sleep, and real Bluetooth or USB microphones connecting or disconnecting.
 
 The run's summary lists every check. The artifact `mac-release-test-<os>` holds screenshots
 of each stage, the app's text at each stage, and the redacted logs.

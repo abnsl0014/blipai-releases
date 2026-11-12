@@ -48,7 +48,7 @@ jobs:
         # standard runners, free on a public repo; the -large/-xlarge ones are not.
         os: [macos-15, macos-26, macos-15-intel]
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 40
+    timeout-minutes: 55
     env:
       GH_TOKEN: ${{ github.token }}
     steps:
@@ -60,6 +60,8 @@ jobs:
       - name: Pick the release and download its Mac files
         env:
           REQUESTED_TAG: ${{ github.event.release.tag_name || inputs.tag }}
+          # A push can pick a tag (a draft works) with a "Test-tag: v0.5.10" line in its message.
+          COMMIT_MESSAGE: ${{ github.event.head_commit.message }}
         run: bash tests/mac/select-release.sh
 
       - name: Update path (the previous release is offered this one)
@@ -75,7 +77,7 @@ jobs:
         run: bash tests/mac/grant-permissions.sh
 
       - name: Launch, sign in, dictate, quit
-        timeout-minutes: 15
+        timeout-minutes: 25
         env:
           BLIP_TEST_EMAIL: ${{ secrets.BLIP_TEST_EMAIL }}
           BLIP_TEST_PASSWORD: ${{ secrets.BLIP_TEST_PASSWORD }}
