@@ -48,6 +48,15 @@ wait_until() {  # wait_until SECONDS command...  → 0 as soon as the command su
   return 1
 }
 
+retry() {  # retry COMMAND...: up to 4 tries, 10/20/30 s apart, for network blips on the runner
+  local try
+  for try in 1 2 3 4; do
+    "$@" && return 0
+    [ "$try" -lt 4 ] && { echo "retrying in $((try * 10)) s: $*" >&2; sleep $((try * 10)); }
+  done
+  return 1
+}
+
 app_running() { pgrep -x "$APP_PROCESS" > /dev/null; }
 
 app_windows() {  # names of the app's windows, comma separated

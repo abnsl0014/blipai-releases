@@ -29,8 +29,13 @@ launch() {  # like launch_app, keeping the app's stdout/stderr (console.error su
   open --stdout "$OUT/app-stdout.log" --stderr "$OUT/app-stderr.log" -a "$APP"
   wait_until 30 app_running
 }
-ui_dump() {  # ui_dump NAME → $OUT/ui-NAME.txt
-  osascript "$here/ui-text.applescript" "$APP_PROCESS" > "$OUT/ui-$1.txt" 2>&1 || true
+ui_dump() {  # ui_dump NAME → $OUT/ui-NAME.txt (Chromium can take a moment to build its tree)
+  local try
+  for try in 1 2 3; do
+    osascript "$here/ui-text.applescript" "$APP_PROCESS" > "$OUT/ui-$1.txt" 2>&1 || true
+    grep -qv '^== window' "$OUT/ui-$1.txt" && return 0
+    sleep 3
+  done
 }
 focus_textedit() {
   osascript > /dev/null << 'OSA'
@@ -84,7 +89,7 @@ record INFO "Onboarding text" "$(grep -v '^== window' "$OUT/ui-onboarding.txt" |
 # The updater checks 5 s after launch. On the latest release it must find nothing newer.
 log_path=$(app_log)
 update_line=$(grep -m1 -E "Found version|is not available|Error: " "$log_path" 2>/dev/null)
-latest=$(gh release view -R "${REPO:-$GITHUB_REPOSITORY}" --json tagName -q .tagName 2>/dev/null)
+latest=$(retry gh release view -R "${REPO:-$GITHUB_REPOSITORY}" --json tagName -q .tagName 2>/dev/null)
 if [ -z "$update_line" ]; then
   record FAIL "Update check on launch" "no update check in the app's main.log 15 s after launch (log: ${log_path:-none}; recent logs: $(log_files))"
 elif [ "$TAG" = "$latest" ] && grep -q "is not available" <<< "$update_line"; then

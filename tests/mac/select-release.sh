@@ -11,11 +11,11 @@ mkdir -p "$DL"
 
 TAG="${REQUESTED_TAG:-}"
 if [ -z "$TAG" ]; then
-  TAG=$(gh release view -R "$REPO" --json tagName -q .tagName)
+  TAG=$(retry gh release view -R "$REPO" --json tagName -q .tagName)
 fi
 VERSION="${TAG#v}"
 
-gh release view "$TAG" -R "$REPO" --json tagName,isDraft,isPrerelease,publishedAt,assets > "$OUT/release.json"
+retry gh release view "$TAG" -R "$REPO" --json tagName,isDraft,isPrerelease,publishedAt,assets > "$OUT/release.json"
 draft=$(jq -r .isDraft "$OUT/release.json")
 published=$(jq -r '.publishedAt // "not published"' "$OUT/release.json")
 record INFO "Release under test" "$TAG (draft: $draft, published: $published)"
@@ -35,7 +35,7 @@ for name in "$DMG" latest-mac.yml "Blip-AI-$VERSION-arm64-mac.zip" "Blip-AI-$VER
     patterns+=(-p "$name")
   fi
 done
-gh release download "$TAG" -R "$REPO" -D "$DL" --clobber "${patterns[@]}"
+retry gh release download "$TAG" -R "$REPO" -D "$DL" --clobber "${patterns[@]}"
 ls -la "$DL"
 
 {

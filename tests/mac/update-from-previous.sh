@@ -7,16 +7,16 @@ set -uo pipefail
 source "$(dirname "$0")/lib.sh"
 
 REPO="${REPO:-$GITHUB_REPOSITORY}"
-latest=$(gh release view -R "$REPO" --json tagName -q .tagName)
+latest=$(retry gh release view -R "$REPO" --json tagName -q .tagName)
 if [ "$TAG" != "$latest" ]; then
   record SKIP "Previous release is offered this update" "$TAG isn't the latest published release ($latest), so no installed app would be offered it yet"
   exit 0
 fi
 
-previous=$(gh release list -R "$REPO" --exclude-drafts --exclude-pre-releases --limit 30 \
+previous=$(retry gh release list -R "$REPO" --exclude-drafts --exclude-pre-releases --limit 30 \
   --json tagName,publishedAt -q 'sort_by(.publishedAt) | reverse | map(.tagName) | map(select(. != "'"$TAG"'")) | .[0] // empty')
 prev_dmg="Blip-AI-${previous#v}-universal.dmg"
-if [ -z "$previous" ] || ! gh release download "$previous" -R "$REPO" -D "$RUNNER_TEMP/previous" --clobber -p "$prev_dmg"; then
+if [ -z "$previous" ] || ! retry gh release download "$previous" -R "$REPO" -D "$RUNNER_TEMP/previous" --clobber -p "$prev_dmg"; then
   record SKIP "Previous release is offered this update" "no earlier release with $prev_dmg"
   exit 0
 fi

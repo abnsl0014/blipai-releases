@@ -14,9 +14,9 @@ record INFO "Runner" "$(sw_vers -productName) $(sw_vers -productVersion) ($(sw_v
 
 # --- virtual microphone -------------------------------------------------------
 export HOMEBREW_NO_AUTO_UPDATE=1 HOMEBREW_NO_INSTALL_CLEANUP=1
-brew install --cask blackhole-2ch blackhole-16ch > "$OUT/brew-blackhole.txt" 2>&1 \
+retry brew install --cask blackhole-2ch blackhole-16ch > "$OUT/brew-blackhole.txt" 2>&1 \
   || { tail -n 20 "$OUT/brew-blackhole.txt"; record FAIL "Install BlackHole (virtual audio)" "brew failed"; }
-brew install switchaudio-osx sox > "$OUT/brew-tools.txt" 2>&1 \
+retry brew install switchaudio-osx sox > "$OUT/brew-tools.txt" 2>&1 \
   || { tail -n 20 "$OUT/brew-tools.txt"; record FAIL "Install SwitchAudioSource and sox" "brew failed"; }
 # coreaudiod only loads new drivers when it starts.
 sudo killall coreaudiod 2>/dev/null || true
