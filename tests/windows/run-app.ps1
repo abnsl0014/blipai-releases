@@ -122,6 +122,12 @@ Record INFO 'Key listener processes' "$(if ($keyProcs) { $keyProcs } else { 'non
 Ui-Dump 'home'
 
 # --- 4. Dictation ---------------------------------------------------------------------
+# When the runner's virtual mic hears nothing (setup-runner.ps1's loopback check), every
+# check below would fail for a reason that has nothing to do with the app.
+$micWorks = -not (Select-String -Path $RESULTS -Pattern "^FAIL`tVirtual microphone carries speech" -Quiet)
+if (-not $micWorks) {
+  Record SKIP 'Dictation and microphone notices' "not tested: this runner's virtual mic heard nothing (see 'Virtual microphone carries speech')"
+} else {
 $phrases = @(
   'The quick brown fox jumps over the lazy dog near the river bank.',
   'Please send the quarterly report to the whole team before Friday afternoon.',
@@ -257,6 +263,7 @@ else {
 }
 $log = App-Log
 if ($log) { Select-String -Path $log -Pattern '\[(stt|paste)-timing\]' | ForEach-Object { $_.Line } | Set-Content (Join-Path $OUT 'dictation-timing.txt') }
+}   # $micWorks
 
 # --- 5. The session ends while the app runs: "Sign in" notice (0.5.10+) ---------
 # End this session on the server (scope=local: only this runner's session), then give
@@ -264,7 +271,9 @@ if ($log) { Select-String -Path $log -Pattern '\[(stt|paste)-timing\]' | ForEach
 # its file on every access, so the app sees it at the next shortcut press.
 try { Invoke-RestMethod -Method Post -Uri "$SUPABASE_URL/auth/v1/logout?scope=local" -TimeoutSec 30 -Headers @{ apikey = $SUPABASE_KEY; Authorization = "Bearer $access" } | Out-Null } catch { }
 $hasSignInNotice = App-Has 'id="status-action"'
-if ($hasSignInNotice) {
+if ($hasSignInNotice -and -not $micWorks) {
+  Record SKIP "Session ended: 'You're signed out' notice" "not tested: with no working mic the app shows 'No microphone found' first"
+} elseif ($hasSignInNotice) {
   python -c "import base64, json, sys, time
 p = sys.argv[1]; cfg = json.load(open(p, encoding='utf-8'))
 b64 = lambda d: base64.urlsafe_b64encode(json.dumps(d).encode()).rstrip(b'=').decode()
@@ -278,14 +287,20 @@ json.dump(cfg, open(p, 'w', encoding='utf-8'))" (App-Config)
   Focus-Target
   W keys down ctrl | Out-Null; W keys down win | Out-Null
   Start-Sleep -Milliseconds 2500
+  # The notice shows for about 8 s: press its button as soon as it is seen.
+  $pressed = ''
   Ui-Dump 'signed-out'
+  $notice = @(Get-Content (Join-Path $OUT 'ui-signed-out.txt') -ErrorAction SilentlyContinue) -match '(?i)signed out|sign in to keep' | Select-Object -First 1
+  if ($notice) { $pressed = W uia-press $APP_PROCESS 'Sign in' }
   W keys up win | Out-Null; W keys up ctrl | Out-Null
-  Start-Sleep -Seconds 2
-  Ui-Dump 'signed-out-after'
-  $notice = @(Get-Content (Join-Path $OUT 'ui-signed-out.txt'), (Join-Path $OUT 'ui-signed-out-after.txt') -ErrorAction SilentlyContinue) -match '(?i)signed out|sign in to keep' | Select-Object -First 1
+  if (-not $notice) {   # shown at release instead
+    Start-Sleep -Seconds 1
+    Ui-Dump 'signed-out-after'
+    $notice = @(Get-Content (Join-Path $OUT 'ui-signed-out-after.txt') -ErrorAction SilentlyContinue) -match '(?i)signed out|sign in to keep' | Select-Object -First 1
+    if ($notice) { $pressed = W uia-press $APP_PROCESS 'Sign in' }
+  }
   if ($notice) {
     Record PASS "Session ended: 'You're signed out' notice" $notice
-    $pressed = W uia-press $APP_PROCESS 'Sign in'
     Start-Sleep -Seconds 6
     # The app logs "[auth] sign-in started from=overlay" and opens its sign-in window.
     if ("$pressed" -like 'pressed*' -and ((Log-Has 'sign-in started') -or (App-Windows) -match '(?i)welcome|sign')) { Record PASS "'Sign in' starts signing in again" "windows: $(App-Windows)" }

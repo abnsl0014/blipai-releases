@@ -83,7 +83,17 @@ try {
     Install-Module -Name AudioDeviceCmdlets -Force -Scope CurrentUser -AllowClobber
   }
   Import-Module AudioDeviceCmdlets
-  $list = Get-AudioDevice -List
+  # A new driver's endpoints can take a while to reach the audio service (run 5 on
+  # windows-2022 listed none): wait, and restart the audio services once halfway.
+  for ($i = 1; $i -le 12; $i++) {
+    try { $list = @(Get-AudioDevice -List) } catch { $list = @() }
+    if (($list | Where-Object { $_.Name -like 'CABLE Input*' }) -and ($list | Where-Object { $_.Name -like 'CABLE Output*' })) { break }
+    if ($i -eq 6) {
+      try { Restart-Service -Name AudioEndpointBuilder -Force; Start-Service -Name Audiosrv } catch { "restart: $_" }
+    }
+    Start-Sleep -Seconds 5
+  }
+  "waited for CABLE devices: $(5 * ($i - 1)) s"
   $list | Where-Object { $_.Type -eq 'Playback' -and $_.Name -like 'CABLE Input*' } | Select-Object -First 1 | Set-AudioDevice | Out-Null
   $list | Where-Object { $_.Type -eq 'Recording' -and $_.Name -like 'CABLE Output*' } | Select-Object -First 1 | Set-AudioDevice | Out-Null
   Get-AudioDevice -List | ForEach-Object { "$($_.Type): $($_.Name)$(if ($_.Default) { ' (default)' })" }
@@ -91,7 +101,7 @@ try {
 '@
 @($devices) + '' | Set-Content -Path (Join-Path $OUT 'audio-devices.txt')
 Write-Host ($devices -join "`n")
-Record INFO 'Audio devices' (($devices | Where-Object { $_ -match 'default|AudioDeviceCmdlets' }) -join '; ')
+Record INFO 'Audio devices' (($devices | Where-Object { $_ -match 'default|AudioDeviceCmdlets|waited' }) -join '; ')
 
 # Microphone privacy: let desktop apps use the microphone (on by default on desktops).
 foreach ($k in 'HKCU:\Software\Microsoft\Windows\CurrentVersion\CapabilityAccessManager\ConsentStore\microphone',

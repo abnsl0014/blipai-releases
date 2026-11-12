@@ -12,11 +12,25 @@ function Find-AppExe {
   Get-ChildItem -Path (Join-Path $env:LOCALAPPDATA 'Programs') -Filter 'Blip-AI.exe' -Recurse -Depth 2 -ErrorAction SilentlyContinue |
     Select-Object -First 1 -ExpandProperty FullName
 }
+# Runs an installer silently; one retry if it fails. A failed attempt is recorded as a
+# WARN with the crash Windows logged (run 5 on windows-2025: 0xC0000005 after 8 s,
+# where runs 3 and 4 had installed fine).
 function Install-Setup([string]$Path) {
-  $p = Start-Process -FilePath $Path -ArgumentList '/S' -PassThru -Wait
-  Start-Sleep -Seconds 3
-  Get-Process -Name $APP_PROCESS -ErrorAction SilentlyContinue | Stop-Process -Force   # some installers launch the app
-  return $p.ExitCode
+  $code = 0
+  foreach ($try in 1, 2) {
+    $started = (Get-Date).AddSeconds(-2)
+    $p = Start-Process -FilePath $Path -ArgumentList '/S' -PassThru -Wait
+    Start-Sleep -Seconds 3
+    Get-Process -Name $APP_PROCESS -ErrorAction SilentlyContinue | Stop-Process -Force   # some installers launch the app
+    $code = $p.ExitCode
+    if ($code -eq 0) { return 0 }
+    $crash = Get-WinEvent -FilterHashtable @{ LogName = 'Application'; Id = 1000, 1001; StartTime = $started } -ErrorAction SilentlyContinue |
+      ForEach-Object { ($_.Message -split "`r?`n" | Where-Object { $_ -match 'Faulting (application|module) name|Exception code|P1:|P4:' }) -join ' ' } |
+      Select-Object -First 2
+    Record WARN "Installer attempt $try fails" ("{0} exited {1} (0x{1:X8}); Windows logged: {2}" -f (Split-Path $Path -Leaf), $code, $(if ($crash) { $crash -join ' / ' } else { 'no crash event' }))
+    Start-Sleep -Seconds 5
+  }
+  return $code
 }
 
 # --- 1. update path ---------------------------------------------------------------
