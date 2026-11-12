@@ -26,8 +26,11 @@ variables → Actions and add:
 | `BLIP_TEST_EMAIL` | the test account's email |
 | `BLIP_TEST_PASSWORD` | its password |
 
-Use a separate account made only for this, never a real one: the logs and screenshots
-are public, and the signed-in screenshots show the account's home window. It needs an
+Use a separate account made only for this, never a real one: the logs and artifacts
+are public. Screenshots taken after sign-in show the account's email, plan and usage, so
+they stay on the runner and aren't uploaded (set `PUBLISH_SIGNED_IN_SCREENSHOTS: 1` in the
+workflow's env to upload them while debugging with a throwaway account). Email addresses
+and tokens are removed from every text file that is uploaded. It needs an
 email and password sign-in, ideally on Pro so repeated runs don't hit the free word limit. Without these secrets,
 sign-in and dictation are skipped with a warning, and everything else still runs.
 

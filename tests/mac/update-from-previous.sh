@@ -47,7 +47,7 @@ else
   record FAIL "Previous release is offered this update" "$previous logged no update check within 90 s (log: ${log:-none}; recent logs: $(log_files))"
 fi
 
-osascript -e "tell application id \"$(defaults read "$old_app/Contents/Info" CFBundleIdentifier)\" to quit" > /dev/null 2>&1 || true
+osa -e "tell application id \"$(defaults read "$old_app/Contents/Info" CFBundleIdentifier)\" to quit" > /dev/null 2>&1 || true
 wait_until 15 bash -c "! pgrep -x '$(defaults read "$old_app/Contents/Info" CFBundleExecutable)'" \
   || pkill -9 -x "$(defaults read "$old_app/Contents/Info" CFBundleExecutable)"
 pkill -f MacKeyServer 2>/dev/null || true

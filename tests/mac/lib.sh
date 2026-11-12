@@ -34,9 +34,16 @@ check() {  # check "name" command...  → PASS if the command succeeds, FAIL oth
 }
 
 screenshot() {  # screenshot name  → $OUT/screens/NN-name.png
-  local n
-  n=$(find "$OUT/screens" -name '*.png' | wc -l | tr -d ' ')
-  screencapture -x "$OUT/screens/$(printf '%02d' $((n + 1)))-$1.png" 2>/dev/null || true
+  # Once the test account is signed in, the screen shows its email, plan and usage, and
+  # the artifact is public. Those screenshots stay on the runner unless
+  # PUBLISH_SIGNED_IN_SCREENSHOTS=1; the window text (redacted) still goes up.
+  local dir="$OUT/screens" n
+  if [ -f "$OUT/.signed-in" ] && [ "${PUBLISH_SIGNED_IN_SCREENSHOTS:-0}" != 1 ]; then
+    dir="$RUNNER_TEMP/private-screens"
+    mkdir -p "$dir"
+  fi
+  n=$( (find "$OUT/screens" "$RUNNER_TEMP/private-screens" -name '*.png' 2>/dev/null) | wc -l | tr -d ' ')
+  screencapture -x "$dir/$(printf '%02d' $((n + 1)))-$1.png" 2>/dev/null || true
 }
 
 wait_until() {  # wait_until SECONDS command...  → 0 as soon as the command succeeds
@@ -47,6 +54,13 @@ wait_until() {  # wait_until SECONDS command...  → 0 as soon as the command su
   done
   return 1
 }
+
+with_timeout() {  # with_timeout SECONDS COMMAND... → the command, killed (exit 142) if it runs longer
+  local seconds="$1"; shift
+  perl -e 'alarm shift; exec @ARGV' "$seconds" "$@"
+}
+# osascript can wait forever, e.g. on an automation prompt nobody can click.
+osa() { with_timeout 20 osa "$@"; }
 
 retry() {  # retry COMMAND...: up to 4 tries, 10/20/30 s apart, for network blips on the runner
   local try
@@ -64,18 +78,18 @@ speech_file() { echo "$RUNNER_TEMP/speech-$(printf '%s' "$1" | shasum | cut -c1-
 render_speech() {  # render_speech "text"... → synthesize ahead of time
   local text
   for text in "$@"; do
-    [ -s "$(speech_file "$text")" ] || say -o "$(speech_file "$text")" "$text"
+    [ -s "$(speech_file "$text")" ] || with_timeout 60 say -o "$(speech_file "$text")" "$text"
   done
 }
 speak() {  # speak "text" → plays it into BlackHole 2ch and returns when it has finished
   render_speech "$1"
-  sox -q "$(speech_file "$1")" -t coreaudio "BlackHole 2ch"
+  with_timeout 30 sox -q "$(speech_file "$1")" -t coreaudio "BlackHole 2ch"
 }
 
 app_running() { pgrep -x "$APP_PROCESS" > /dev/null; }
 
 app_windows() {  # names of the app's windows, comma separated
-  osascript -e "tell application \"System Events\" to get name of every window of process \"$APP_PROCESS\"" 2>/dev/null || true
+  osa -e "tell application \"System Events\" to get name of every window of process \"$APP_PROCESS\"" 2>/dev/null || true
 }
 
 app_log() {  # path of the app's electron-log file (it only exists once something was logged)
@@ -101,12 +115,12 @@ launch_app() {
 }
 
 quit_app() {  # quit the way the tray's Quit does, then make sure nothing is left behind
-  osascript -e "tell application \"$APP_PROCESS\" to quit" > /dev/null 2>&1 || true
+  osa -e "tell application \"$APP_PROCESS\" to quit" > /dev/null 2>&1 || true
   wait_until 15 bash -c "! pgrep -x '$APP_PROCESS'"
 }
 
 textedit_text() {
-  osascript -e 'tell application "TextEdit" to get text of document 1' 2>/dev/null || true
+  osa -e 'tell application "TextEdit" to get text of document 1' 2>/dev/null || true
 }
 
 # Words of $2 (expected) found in $1 (actual), as a percentage. Case and punctuation

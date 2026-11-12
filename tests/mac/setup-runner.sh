@@ -53,11 +53,35 @@ if [ "$mic_before" != "authorized" ] && [ -x "$responsible" ]; then
 fi
 record INFO "Runner's microphone access" "responsible process: $responsible; before: $mic_before, now: $("$KEYS" mic 2>&1)"
 
+# The test drives TextEdit, System Events and Safari with AppleScript. The first such
+# script raises an "allow automation" prompt that nobody can click, and the script
+# waits on it forever, so grant the runner's process that permission up front (Blip
+# gets its own grant in grant-permissions.sh).
+if [ -x "$responsible" ]; then
+  now=$(date +%s)
+  for client in "$responsible" /usr/bin/osascript; do
+    for target in com.apple.TextEdit com.apple.systemevents com.apple.Safari; do
+      sqlite3 "$HOME/Library/Application Support/com.apple.TCC/TCC.db" "INSERT OR REPLACE INTO access
+        (service, client, client_type, auth_value, auth_reason, auth_version, csreq, policy_id,
+         indirect_object_identifier_type, indirect_object_identifier, indirect_object_code_identity,
+         flags, last_modified)
+        VALUES ('kTCCServiceAppleEvents', '$client', 1, 2, 4, 1, NULL, NULL, 0, '$target', NULL, 0, $now);"
+    done
+  done
+  killall tccd 2>/dev/null || true
+fi
+if out=$(osa -e 'tell application "TextEdit" to count documents' 2>&1); then
+  record PASS "Runner can script TextEdit" "AppleScript answered ($out documents)"
+else
+  record FAIL "Runner can script TextEdit" "AppleScript to TextEdit failed or hung: $(head -c 160 <<< "$out")"
+fi
+osa -e 'tell application "TextEdit" to quit saving no' > /dev/null 2>&1 || true
+
 # Loopback check: what `say` plays into BlackHole 2ch must come back out of the default
 # input. If this fails, a dictation failure later says nothing about the app.
 phrase="Testing the virtual microphone."
 render_speech "$phrase" 2> "$OUT/say.txt" || echo "say exited $?" >> "$OUT/say.txt"
-rec -q -c 1 -r 16000 "$OUT/loopback.wav" trim 0 5 2> "$OUT/rec.txt" &
+with_timeout 20 rec -q -c 1 -r 16000 "$OUT/loopback.wav" trim 0 5 2> "$OUT/rec.txt" &
 rec_pid=$!
 sleep 1
 speak "$phrase" 2>> "$OUT/say.txt" || echo "sox play exited $?" >> "$OUT/say.txt"

@@ -18,7 +18,7 @@ SUPABASE_URL="${SUPABASE_URL:-https://hqwmccawtepvundsgnil.supabase.co}"
 SUPABASE_KEY="${SUPABASE_KEY:-sb_publishable_TCu8hwzGitgxmzCu2rYHiA_6r3MImeD}"
 
 now_ms() { perl -MTime::HiRes=time -e 'printf "%d\n", time * 1000'; }
-muted() { osascript -e 'output muted of (get volume settings)' 2>/dev/null || echo unknown; }
+muted() { osa -e 'output muted of (get volume settings)' 2>/dev/null || echo unknown; }
 key_server_running() { pgrep -f 'MacKeyServer' > /dev/null; }
 signed_in() {
   local config; config=$(app_config)
@@ -31,13 +31,13 @@ launch() {  # like launch_app, keeping the app's stdout/stderr (console.error su
 ui_dump() {  # ui_dump NAME → $OUT/ui-NAME.txt (Chromium can take a moment to build its tree)
   local try
   for try in 1 2 3; do
-    osascript "$here/ui-text.applescript" "$APP_PROCESS" > "$OUT/ui-$1.txt" 2>&1 || true
+    with_timeout 90 osascript "$here/ui-text.applescript" "$APP_PROCESS" > "$OUT/ui-$1.txt" 2>&1 || true
     grep -qv '^== window' "$OUT/ui-$1.txt" && return 0
     sleep 3
   done
 }
 focus_textedit() {
-  osascript > /dev/null << 'OSA'
+  osa > /dev/null << 'OSA'
 tell application "TextEdit"
   if (count of documents) is 0 then make new document
   set text of document 1 to ""
@@ -106,7 +106,7 @@ if [ -z "${BLIP_TEST_EMAIL:-}" ] || [ -z "${BLIP_TEST_PASSWORD:-}" ]; then
   exit 0
 fi
 
-session=$(curl -sS -X POST "$SUPABASE_URL/auth/v1/token?grant_type=password" \
+session=$(curl -sS --max-time 30 -X POST "$SUPABASE_URL/auth/v1/token?grant_type=password" \
   -H "apikey: $SUPABASE_KEY" -H 'Content-Type: application/json' \
   -d "$(jq -n --arg e "$BLIP_TEST_EMAIL" --arg p "$BLIP_TEST_PASSWORD" '{email: $e, password: $p}')")
 access=$(jq -r '.access_token // empty' <<< "$session")
@@ -120,6 +120,7 @@ echo "::add-mask::$access"
 echo "::add-mask::$refresh"
 record PASS "Test account signs in (Supabase)" "password grant returned a session"
 
+touch "$OUT/.signed-in"   # from here on, screenshots stay private (see screenshot() in lib.sh)
 open "blipai://auth?token=$access&refresh_token=$refresh"
 if wait_until 45 signed_in; then record PASS "Signs in through the blipai://auth link" "token saved by the app"
 else record FAIL "Signs in through the blipai://auth link" "no token saved within 45 s"; fi
@@ -209,7 +210,7 @@ if textedit_has_text; then record FAIL "Esc cancels a hands-free dictation" "typ
 else record PASS "Esc cancels a hands-free dictation" "nothing typed in 10 s"; fi
 "$KEYS" chord fn+space > /dev/null 2>&1 || true   # in case Esc didn't stop it
 sleep 3
-osascript -e 'tell application "TextEdit" to set text of document 1 to ""' > /dev/null 2>&1 || true
+osa -e 'tell application "TextEdit" to set text of document 1 to ""' > /dev/null 2>&1 || true
 
 # 4e. Paste last transcript (Cmd+Ctrl+V) pastes the last finished dictation again.
 focus_textedit
@@ -251,6 +252,6 @@ else record PASS "Key listener exits with the app" ""; fi
 collect_crash_reports
 
 # End this session so its refresh token stops working (the logs are public).
-curl -sS -o /dev/null -X POST "$SUPABASE_URL/auth/v1/logout?scope=local" \
+curl -sS --max-time 30 -o /dev/null -X POST "$SUPABASE_URL/auth/v1/logout?scope=local" \
   -H "apikey: $SUPABASE_KEY" -H "Authorization: Bearer $access" || true
 exit 0
