@@ -1,8 +1,12 @@
 #!/bin/bash
-# Checks what the auto-updater relies on, before anything is installed:
-#   latest-mac.yml names this version, every file it lists is on the release with that
-#   size, the downloaded files hash to its sha512, and each updater zip holds a signed,
-#   notarized app of this version for the right CPU.
+# Checks what the auto-updater relies on. Runs after install-app.sh, because an update
+# is only accepted if it is signed by the same identity as the app already installed.
+#   • latest-mac.yml names this version and lists zips that are on the release with the
+#     size it promises (electron-updater on macOS only ever downloads the zips)
+#   • the downloaded files hash to the sha512 it lists
+#   • each zip holds an app of this version, for the right CPU, whose signature is valid
+#     and satisfies the installed app's designated requirement (what Squirrel.Mac checks
+#     before swapping the app)
 set -uo pipefail
 source "$(dirname "$0")/lib.sh"
 
@@ -20,17 +24,28 @@ else
   record FAIL "latest-mac.yml version" "says $yml_version, release is $VERSION"
 fi
 
-# Every file the updater may fetch must exist with the size the yml promises.
-missing=()
+# Every zip the updater may fetch must exist with the size the yml promises. Other
+# entries (DMGs) are never downloaded by the updater, so a missing one is only a warning.
+broken_zips=()
+missing_other=()
 while IFS=$'\t' read -r url size; do
   actual=$(jq -r --arg n "$url" '.assets[] | select(.name == $n) | .size' "$OUT/release.json")
-  if [ -z "$actual" ]; then missing+=("$url (missing)")
-  elif [ "$actual" != "$size" ]; then missing+=("$url (yml $size, asset $actual)"); fi
+  problem=""
+  if [ -z "$actual" ]; then problem="$url (not on the release)"
+  elif [ "$actual" != "$size" ]; then problem="$url (yml $size bytes, asset $actual)"; fi
+  [ -z "$problem" ] && continue
+  case "$url" in
+    *.zip) broken_zips+=("$problem") ;;
+    *) missing_other+=("$problem") ;;
+  esac
 done < <(jq -r '.files[] | [.url, (.size|tostring)] | @tsv' "$OUT/latest-mac.json")
-if [ ${#missing[@]} -eq 0 ]; then
-  record PASS "Files listed in latest-mac.yml are on the release" "$(jq '.files | length' "$OUT/latest-mac.json") files, sizes match"
+if [ ${#broken_zips[@]} -eq 0 ]; then
+  record PASS "Updater zips listed in latest-mac.yml are on the release" "$(jq '[.files[] | select(.url | endswith(".zip"))] | length' "$OUT/latest-mac.json") zips, sizes match"
 else
-  record FAIL "Files listed in latest-mac.yml are on the release" "${missing[*]}"
+  record FAIL "Updater zips listed in latest-mac.yml are on the release" "${broken_zips[*]}"
+fi
+if [ ${#missing_other[@]} -gt 0 ]; then
+  record WARN "latest-mac.yml lists files the release doesn't have" "${missing_other[*]}. Harmless (the updater only downloads zips), but the yml is out of step with the release."
 fi
 
 path=$(jq -r .path "$OUT/latest-mac.json")
@@ -52,7 +67,10 @@ for f in "$DL"/*.zip "$DL"/*.dmg; do
   else record FAIL "sha512 $name" "file hashes to a different value than latest-mac.yml says"; fi
 done
 
-# What the updater installs: each zip must hold a signed, notarized app of this version.
+# The installed app's designated requirement: an update must satisfy it.
+requirement=$(codesign -d -r- "$APP" 2>&1 | sed -n 's/^designated => //p')
+record INFO "Installed app's designated requirement" "$requirement"
+
 want_archs() {
   case "$1" in
     *-arm64-mac.zip) echo "arm64" ;;
@@ -72,12 +90,21 @@ for zip in "$DL"/*-mac.zip; do
   problems=()
   [ "$v" = "$VERSION" ] || problems+=("version $v")
   [ "$archs" = "$(want_archs "$name")" ] || problems+=("archs '$archs', expected '$(want_archs "$name")'")
-  codesign --verify --deep --strict "$app" 2> "$OUT/codesign-$name.txt" || problems+=("codesign: $(tail -n 1 "$OUT/codesign-$name.txt")")
-  spctl --assess --type execute "$app" 2> "$OUT/spctl-$name.txt" || problems+=("Gatekeeper: $(tail -n 1 "$OUT/spctl-$name.txt")")
+  if ! codesign --verify --deep --strict --test-requirement="=$requirement" "$app" 2> "$OUT/codesign-$name.txt"; then
+    problems+=("signature: $(tail -n 1 "$OUT/codesign-$name.txt")")
+  fi
   if [ ${#problems[@]} -eq 0 ]; then
-    record PASS "Updater zip $name" "$v, $archs, signed and accepted by Gatekeeper"
+    record PASS "Updater zip $name" "$v, $archs, signed by the same identity as the installed app"
   else
     record FAIL "Updater zip $name" "${problems[*]}"
+  fi
+  # Gatekeeper doesn't assess an app the updater installs (it isn't quarantined), but it
+  # does if someone downloads this zip from the release page and opens it.
+  spctl --assess --type execute --verbose=2 "$app" > "$OUT/spctl-$name.txt" 2>&1
+  if grep -q 'accepted' "$OUT/spctl-$name.txt"; then
+    record PASS "Gatekeeper accepts the app in $name" "$(grep -o 'source=.*' "$OUT/spctl-$name.txt")"
+  else
+    record WARN "Gatekeeper accepts the app in $name" "$(grep -o 'source=.*' "$OUT/spctl-$name.txt" || tail -n 1 "$OUT/spctl-$name.txt"). Auto-updates still install (Gatekeeper skips them), but opening this zip from the release page is blocked."
   fi
   rm -rf "$dir"
 done

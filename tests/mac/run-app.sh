@@ -81,6 +81,19 @@ else record FAIL "Shows onboarding on first launch" "no window"; fi
 ui_dump onboarding
 record INFO "Onboarding text" "$(grep -v '^== window' "$OUT/ui-onboarding.txt" | head -n 12 | tr '\n' '|' | cut -c1-300)"
 
+# The updater checks 5 s after launch. On the latest release it must find nothing newer.
+update_line=$(grep -m1 -E "Found version|is not available|Error: " "$(app_log)" 2>/dev/null)
+latest=$(gh release view -R "${REPO:-$GITHUB_REPOSITORY}" --json tagName -q .tagName 2>/dev/null)
+if [ -z "$update_line" ]; then
+  record FAIL "Update check on launch" "no update check in main.log 15 s after launch"
+elif [ "$TAG" = "$latest" ] && grep -q "is not available" <<< "$update_line"; then
+  record PASS "Update check on launch" "up to date: $(cut -c1-160 <<< "$update_line" | sed 's/.*\] //')"
+elif [ "$TAG" = "$latest" ]; then
+  record FAIL "Update check on launch" "$(cut -c1-200 <<< "$update_line")"
+else
+  record INFO "Update check on launch" "$(cut -c1-200 <<< "$update_line")"
+fi
+
 # --- 2. Sign in ---------------------------------------------------------------
 if [ -z "${BLIP_TEST_EMAIL:-}" ] || [ -z "${BLIP_TEST_PASSWORD:-}" ]; then
   record SKIP "Sign in and dictation" "add the BLIP_TEST_EMAIL and BLIP_TEST_PASSWORD secrets to test them"
@@ -206,12 +219,19 @@ if [ -n "$log" ]; then
   record INFO "App's dictation timing lines" "$(wc -l < "$OUT/dictation-timing.txt" | tr -d ' ') lines: $(grep -m1 'stt-timing\] client' "$OUT/dictation-timing.txt" | sed 's/.*\[stt-timing\]//' | cut -c1-160)"
 fi
 
-# History in the home window.
+# History: the app keeps finished dictations in its store (the home window lists them).
 ui_dump after-dictation
-if grep -qi 'quick brown fox' "$OUT/ui-after-dictation.txt"; then
-  record PASS "Dictations appear in the app's history" ""
+history=$(python3 -c '
+import json, sys
+items = json.load(open(sys.argv[1])).get("transcriptionHistory", [])
+text = json.dumps(items).lower()
+print(len(items), "quick brown fox" in text, "quarterly report" in text)
+' "$(app_config)" 2>/dev/null)
+read -r history_count has_ptt has_handsfree <<< "${history:-0 False False}"
+if [ "$has_ptt" = "True" ] && [ "$has_handsfree" = "True" ]; then
+  record PASS "Dictations saved to history" "$history_count entries, including the push-to-talk and hands-free ones"
 else
-  record INFO "Dictations appear in the app's history" "not found in the windows' text (the home window may be closed)"
+  record FAIL "Dictations saved to history" "$history_count entries; push-to-talk found: $has_ptt, hands-free found: $has_handsfree"
 fi
 
 # --- 5. Quit ------------------------------------------------------------------

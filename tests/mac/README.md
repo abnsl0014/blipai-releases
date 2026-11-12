@@ -35,15 +35,18 @@ sign-in and dictation are skipped with a warning, and everything else still runs
 | Step | Script | Checks |
 |---|---|---|
 | Runner setup | `setup-runner.sh` | A virtual mic (BlackHole) carries speech. Synthetic Fn+Space reaches an event tap. |
-| Release files | `select-release.sh`, `verify-release.sh` | `latest-mac.yml` names this version, and every file it lists is on the release with that size. Downloaded files match its sha512. Each updater zip holds a signed, notarized app of this version for the right CPU. |
+| Release files | `select-release.sh` | Downloads the universal DMG, `latest-mac.yml` and the updater zips. |
+| Update path | `update-from-previous.sh` | Installs the previous release, launches it, and checks that its updater is offered this version. Latest published release only, since the updater never sees drafts. |
 | Install | `install-app.sh` | DMG checksum and Applications shortcut. Version and universal binary. `codesign`, Gatekeeper and the stapled ticket. Mic and Apple Events entitlements and their Info.plist reasons. The `blipai://` scheme. A signed `MacKeyServer`. |
+| Updater files | `verify-release.sh` | `latest-mac.yml` names this version, and the zips it lists are on the release with that size. Downloaded files match its sha512. Each zip holds an app of this version for the right CPU, signed by the same identity as the installed app (what Squirrel.Mac checks before it swaps in an update). Gatekeeper rejecting a zip's app is a warning: updates skip Gatekeeper, but someone opening that zip by hand is blocked. |
 | Permissions | `grant-permissions.sh` | Grants Microphone, Accessibility, Input Monitoring and Automation of System Events, as a person does during onboarding. |
 | The app | `run-app.sh` | See below. |
-| Report | `report.sh` | Writes the job summary, removes tokens and emails from the logs, and fails the job if any check failed. |
+| Report | `report.sh` | Writes the job summary, removes tokens and emails from the logs, and fails the job if any check failed. Warnings (real findings that don't break users) don't fail it. |
 
 `run-app.sh` checks, in order:
 
-1. **First launch.** The app launches, stays up and shows onboarding.
+1. **First launch.** The app launches, stays up and shows onboarding. On the latest release,
+   its update check finds nothing newer.
 2. **Sign-in.** The test account signs in through the `blipai://auth` link, the same link
    the website opens.
 3. **Relaunch signed in.** The app relaunches and the Fn key listener is running.
@@ -54,6 +57,7 @@ sign-in and dictation are skipped with a warning, and everything else still runs
    - Esc cancels a hands-free dictation
    - Paste last transcript (Cmd+Ctrl+V)
    - system audio is muted while recording and restored after
+   - the dictations are saved to history
 5. **Quit.** The app quits and its key listener exits with it.
 
 The run's summary lists every check. The artifact `mac-release-test-<os>` holds screenshots
@@ -74,7 +78,8 @@ of each stage, the app's text at each stage, and the redacted logs.
 
 ## Limits
 
-- It tests one machine per macOS version in the matrix, with a synthetic voice. Accents,
+- It runs on three standard runners: Apple silicon on macOS 15 and 26, and Intel on macOS
+  15. Each is one machine with a synthetic voice. Accents,
   noisy rooms and real microphones aren't covered.
 - Clicking through onboarding isn't automated. The test signs in through the deep link,
   then relaunches the app.

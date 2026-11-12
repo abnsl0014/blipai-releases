@@ -44,7 +44,9 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [macos-15]
+        # Apple silicon on macOS 15 and 26, and Intel (the DMG's x86_64 half). All are
+        # standard runners, free on a public repo; the -large/-xlarge ones are not.
+        os: [macos-15, macos-26, macos-15-intel]
     runs-on: ${{ matrix.os }}
     timeout-minutes: 40
     env:
@@ -60,11 +62,14 @@ jobs:
           REQUESTED_TAG: ${{ github.event.release.tag_name || inputs.tag }}
         run: bash tests/mac/select-release.sh
 
-      - name: Check the updater files (latest-mac.yml, hashes, signed zips)
-        run: bash tests/mac/verify-release.sh
+      - name: Update path (the previous release is offered this one)
+        run: bash tests/mac/update-from-previous.sh
 
       - name: Install from the DMG and check the installed app
         run: bash tests/mac/install-app.sh
+
+      - name: Check the updater files (latest-mac.yml, hashes, signed zips)
+        run: bash tests/mac/verify-release.sh
 
       - name: Grant the app's macOS permissions
         run: bash tests/mac/grant-permissions.sh

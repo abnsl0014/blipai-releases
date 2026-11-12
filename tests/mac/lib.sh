@@ -1,7 +1,7 @@
 # Shared helpers for the Mac release test. Sourced by the other scripts.
 # Every check appends one line to $RESULTS:  STATUS<TAB>check<TAB>detail
-# STATUS is PASS, FAIL, SKIP or INFO. report.sh turns the file into the job summary
-# and fails the job if any line is FAIL.
+# STATUS is PASS, FAIL, WARN (a real finding that doesn't break users), SKIP or INFO.
+# report.sh turns the file into the job summary and fails the job if any line is FAIL.
 
 : "${OUT:=$RUNNER_TEMP/blip-test}"          # everything uploaded as the run's artifact
 : "${RESULTS:=$OUT/results.tsv}"
@@ -18,7 +18,7 @@ record() {  # record STATUS "check" "detail"
   printf '%s\t%s\t%s\n' "$status" "$check" "$detail" >> "$RESULTS"
   case "$status" in
     FAIL) echo "::error title=$check::$detail" ;;
-    SKIP) echo "::warning title=$check::$detail" ;;
+    WARN|SKIP) echo "::warning title=$check::$detail" ;;
     *) echo "$status  $check  $detail" ;;
   esac
 }

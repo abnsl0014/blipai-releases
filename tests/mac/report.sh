@@ -15,28 +15,29 @@ redact() {
 
 log=$(app_log)
 [ -n "$log" ] && redact < "$log" > "$OUT/main.log"
-for f in "$OUT"/app-stdout.log "$OUT"/app-stderr.log; do
+for f in "$OUT"/*.log; do
   [ -f "$f" ] && { redact < "$f" > "$f.tmp" && mv "$f.tmp" "$f"; }
 done
 
 pass=$(grep -c '^PASS' "$RESULTS" || true)
 fail=$(grep -c '^FAIL' "$RESULTS" || true)
+warn=$(grep -c '^WARN' "$RESULTS" || true)
 skip=$(grep -c '^SKIP' "$RESULTS" || true)
 {
   echo "## Blip ${TAG:-?} on $(sw_vers -productName) $(sw_vers -productVersion) ($(uname -m))"
   echo
-  echo "**$pass passed, $fail failed, $skip skipped.** Screenshots and redacted logs are in the run's artifact."
+  echo "**$pass passed, $fail failed, $warn warnings, $skip skipped.** Screenshots and redacted logs are in the run's artifact."
   echo
   echo "| | Check | Detail |"
   echo "|---|---|---|"
   while IFS=$'\t' read -r status name detail; do
     case "$status" in
-      PASS) icon="✅" ;; FAIL) icon="❌" ;; SKIP) icon="⚠️" ;; *) icon="ℹ️" ;;
+      PASS) icon="✅" ;; FAIL) icon="❌" ;; WARN|SKIP) icon="⚠️" ;; *) icon="ℹ️" ;;
     esac
     detail="${detail//|/\\|}"
     echo "| $icon | $name | $detail |"
   done < "$RESULTS"
 } | redact >> "$GITHUB_STEP_SUMMARY"
 
-echo "$pass passed, $fail failed, $skip skipped"
+echo "$pass passed, $fail failed, $warn warnings, $skip skipped"
 [ "$fail" -eq 0 ]
