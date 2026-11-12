@@ -57,6 +57,21 @@ retry() {  # retry COMMAND...: up to 4 tries, 10/20/30 s apart, for network blip
   return 1
 }
 
+# Speech into the virtual mic. Each phrase is synthesized to a file once and then played
+# with sox, which starts at once: `say` itself can take ~3 s to start talking on a cold
+# runner (seen on macOS 26), which would put unpredictable silence into every dictation.
+speech_file() { echo "$RUNNER_TEMP/speech-$(printf '%s' "$1" | shasum | cut -c1-12).aiff"; }
+render_speech() {  # render_speech "text"... → synthesize ahead of time
+  local text
+  for text in "$@"; do
+    [ -s "$(speech_file "$text")" ] || say -o "$(speech_file "$text")" "$text"
+  done
+}
+speak() {  # speak "text" → plays it into BlackHole 2ch and returns when it has finished
+  render_speech "$1"
+  sox -q "$(speech_file "$1")" -t coreaudio "BlackHole 2ch"
+}
+
 app_running() { pgrep -x "$APP_PROCESS" > /dev/null; }
 
 app_windows() {  # names of the app's windows, comma separated

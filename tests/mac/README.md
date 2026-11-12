@@ -65,9 +65,11 @@ of each stage, the app's text at each stage, and the redacted logs.
 
 ## How it stands in for a person
 
-- **Microphone.** BlackHole 2ch is the default input, and the test speaks into it with
-  `say -a "BlackHole 2ch"`. The default output is BlackHole 16ch, so Blip's "mute system
-  audio while dictating" mutes that device and not the test's voice.
+- **Microphone.** BlackHole 2ch is the default input. The test renders each phrase with
+  `say` ahead of time and plays it into BlackHole 2ch with sox. Playing a file starts at
+  once, whereas `say` can take seconds to start talking on a cold runner. The default output
+  is BlackHole 16ch, so Blip's "mute system audio while dictating" mutes that device and not
+  the test's voice.
 - **Keyboard.** `keys.swift` posts Fn, Space, Esc and Cmd+Ctrl+V as HID events, the same
   events a keyboard produces. MacKeyServer's event tap and Electron's global shortcuts see
   them as real key presses. The Fn key is set to "Do Nothing" first, as onboarding asks.

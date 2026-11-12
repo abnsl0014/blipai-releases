@@ -1,7 +1,8 @@
 #!/bin/bash
 # Prepares the runner to stand in for a person at a Mac:
 #   • a microphone: BlackHole 2ch is the default input, and the test "speaks" into it
-#     with `say -a "BlackHole 2ch"`. The default output is BlackHole 16ch, so Blip's
+#     (speech from `say`, played into BlackHole 2ch with sox; see speak() in lib.sh).
+#     The default output is BlackHole 16ch, so Blip's
 #     mute-system-audio-while-dictating mutes that device and not the test's voice.
 #   • a keyboard: tests/mac/keys.swift, which posts real Fn/Space/Esc key events.
 #   • the Fn (globe) key set to "Do Nothing", as Blip's onboarding asks people to,
@@ -54,10 +55,12 @@ record INFO "Runner's microphone access" "responsible process: $responsible; bef
 
 # Loopback check: what `say` plays into BlackHole 2ch must come back out of the default
 # input. If this fails, a dictation failure later says nothing about the app.
-rec -q -c 1 -r 16000 "$OUT/loopback.wav" trim 0 4 2> "$OUT/rec.txt" &
+phrase="Testing the virtual microphone."
+render_speech "$phrase" 2> "$OUT/say.txt" || echo "say exited $?" >> "$OUT/say.txt"
+rec -q -c 1 -r 16000 "$OUT/loopback.wav" trim 0 5 2> "$OUT/rec.txt" &
 rec_pid=$!
-sleep 0.7
-say -a "BlackHole 2ch" "Testing the virtual microphone." 2> "$OUT/say.txt" || echo "say exited $?" >> "$OUT/say.txt"
+sleep 1
+speak "$phrase" 2>> "$OUT/say.txt" || echo "sox play exited $?" >> "$OUT/say.txt"
 wait "$rec_pid"
 rms=$(sox "$OUT/loopback.wav" -n stat 2>&1 | awk '/RMS +amplitude/ {print $3}')
 if awk -v r="${rms:-0}" 'BEGIN { exit !(r > 0.003) }'; then

@@ -18,7 +18,6 @@ SUPABASE_URL="${SUPABASE_URL:-https://hqwmccawtepvundsgnil.supabase.co}"
 SUPABASE_KEY="${SUPABASE_KEY:-sb_publishable_TCu8hwzGitgxmzCu2rYHiA_6r3MImeD}"
 
 now_ms() { perl -MTime::HiRes=time -e 'printf "%d\n", time * 1000'; }
-speak() { say -a "BlackHole 2ch" "$1"; }
 muted() { osascript -e 'output muted of (get volume settings)' 2>/dev/null || echo unknown; }
 key_server_running() { pgrep -f 'MacKeyServer' > /dev/null; }
 signed_in() {
@@ -143,6 +142,10 @@ ui_dump home
 
 # --- 4. Dictation -------------------------------------------------------------
 log_before=$(wc -l < "$(app_log)" 2>/dev/null || echo 0)
+render_speech "The quick brown fox jumps over the lazy dog near the river bank." \
+  "Please send the quarterly report to the whole team before Friday afternoon." \
+  "Um, so I think we should, uh, move the meeting to next week." \
+  "This sentence should never be typed."
 
 # 4a. Push-to-talk: hold Fn, speak, release.
 phrase="The quick brown fox jumps over the lazy dog near the river bank."
