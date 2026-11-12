@@ -86,13 +86,36 @@ static class WTool
     }
 
     // ---- target window -------------------------------------------------------------
+    // The text box ignores the window menu that a lone Alt opens (Focus presses Alt to be
+    // allowed to change the front window; if the box is in front already, the Alt reaches
+    // it and its next Ctrl+V goes to the window menu, not the text).
+    class TargetForm : Form
+    {
+        public Action<string> Note = delegate { };
+        protected override void WndProc(ref Message m)
+        {
+            if (m.Msg == 0x0112 && (m.WParam.ToInt64() & 0xFFF0) == 0xF100) { Note("window menu (Alt) ignored"); return; }
+            base.WndProc(ref m);
+        }
+    }
+
     static void Target(string file)
     {
-        var form = new Form { Text = "Blip Test Target", Width = 900, Height = 500, TopMost = true, StartPosition = FormStartPosition.CenterScreen };
+        // FILE.events: each key, focus change and text change the box gets (not the text).
+        Action<string> note = msg => {
+            try { File.AppendAllText(file + ".events", DateTime.Now.ToString("HH:mm:ss.fff") + " " + msg + Environment.NewLine); } catch { }
+        };
+        var form = new TargetForm { Text = "Blip Test Target", Width = 900, Height = 500, TopMost = true, StartPosition = FormStartPosition.CenterScreen };
+        form.Note = note;
         var box = new TextBox { Multiline = true, Dock = DockStyle.Fill, Font = new Font("Segoe UI", 14) };
         form.Controls.Add(box);
         File.WriteAllText(file, "");
-        box.TextChanged += (s, e) => { try { File.WriteAllText(file, box.Text); } catch { } };
+        box.TextChanged += (s, e) => { try { File.WriteAllText(file, box.Text); } catch { } note("text now " + box.TextLength + " chars"); };
+        box.KeyDown += (s, e) => note("key " + (e.Control ? "ctrl+" : "") + (e.Alt ? "alt+" : "") + (e.Shift ? "shift+" : "") + e.KeyCode);
+        form.Activated += (s, e) => note("window activated");
+        form.Deactivate += (s, e) => note("window deactivated");
+        box.GotFocus += (s, e) => note("box focused");
+        box.LostFocus += (s, e) => note("box lost focus");
         var timer = new System.Windows.Forms.Timer { Interval = 200 };
         timer.Tick += (s, e) => {
             if (File.Exists(file + ".clear")) {
@@ -158,6 +181,7 @@ static class WTool
     {
         foreach (var w in TopWindows(null)) {
             if (w.Value.IndexOf(title, StringComparison.OrdinalIgnoreCase) < 0) continue;
+            if (GetForegroundWindow() == w.Key) { Console.WriteLine("already in front: " + w.Value); return; }
             bool ok = BringToFront(w.Key);
             Console.WriteLine((ok ? "focused " : "focus refused ") + w.Value);
             return;
@@ -175,16 +199,31 @@ static class WTool
 
     static IntPtr TopWindowAt(POINT p) { return GetAncestor(WindowFromPoint(p), GA_ROOT); }
 
+    const uint MOUSEEVENTF_MOVE = 0x1, MOUSEEVENTF_ABSOLUTE = 0x8000;
+
+    static void Mouse(uint flags, POINT p)
+    {
+        var screen = Screen.PrimaryScreen.Bounds;
+        var input = new INPUT { type = 0 };
+        input.u.mi.dx = (int)((p.X * 65535L) / Math.Max(1, screen.Width - 1));
+        input.u.mi.dy = (int)((p.Y * 65535L) / Math.Max(1, screen.Height - 1));
+        input.u.mi.dwFlags = flags | MOUSEEVENTF_ABSOLUTE;
+        SendInput(1, new[] { input }, Marshal.SizeOf(typeof(INPUT)));
+    }
+
+    // Like a hand: the pointer moves onto the button (the page sees it enter and hover),
+    // rests, then presses and releases.
     static void Click(POINT p)
     {
-        SetCursorPos(p.X, p.Y);
+        for (int i = 6; i >= 0; i--) {
+            Mouse(MOUSEEVENTF_MOVE, new POINT { X = p.X - 8 * i, Y = p.Y });
+            Thread.Sleep(40);
+        }
+        Thread.Sleep(250);
+        Mouse(MOUSEEVENTF_LEFTDOWN, p);
+        Thread.Sleep(80);
+        Mouse(MOUSEEVENTF_LEFTUP, p);
         Thread.Sleep(150);
-        var down = new INPUT { type = 0 }; down.u.mi.dwFlags = MOUSEEVENTF_LEFTDOWN;
-        var up = new INPUT { type = 0 }; up.u.mi.dwFlags = MOUSEEVENTF_LEFTUP;
-        SendInput(1, new[] { down }, Marshal.SizeOf(typeof(INPUT)));
-        Thread.Sleep(60);
-        SendInput(1, new[] { up }, Marshal.SizeOf(typeof(INPUT)));
-        Thread.Sleep(100);
     }
 
     // ---- UI Automation (Electron exposes its page through it) ----------------------

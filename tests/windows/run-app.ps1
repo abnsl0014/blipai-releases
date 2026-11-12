@@ -43,12 +43,12 @@ function Ptt([string]$Phrase) {   # hold Ctrl+Win, speak, release
   if ($Phrase) { Speak $Phrase }
   Start-Sleep -Milliseconds 800
   W keys up win | Out-Null; W keys up ctrl | Out-Null
-  $script:ReleasedAt = Get-Date
   Watch-Front
 }
 # The windows in front over the next 3 s, while the app transcribes and pastes. When
 # nothing reaches the text box, Judge reports them.
 function Watch-Front {
+  $script:ReleasedAt = Get-Date
   $seen = New-Object System.Collections.Generic.List[string]
   foreach ($i in 1..12) {
     $t = "$(W fg)"
@@ -57,7 +57,8 @@ function Watch-Front {
   }
   $script:FrontAfterRelease = ($seen | ForEach-Object { "'$_'" }) -join ' then '
 }
-function History {   # status, timestamp and text of each history item, newest first
+# (Not "History": that is a built-in alias of Get-History, and aliases win over functions.)
+function Get-BlipHistory {   # status, timestamp and text of each history item, newest first
   $c = App-Config
   if (-not $c) { return @() }
   $json = python -c "import json, sys; h = json.load(open(sys.argv[1], encoding='utf-8')).get('transcriptionHistory') or []; print(json.dumps([{'status': r.get('status') or 'ok', 'timestamp': str(r.get('timestamp') or ''), 'text': r.get('text') or ''} for r in h if isinstance(r, dict)]))" $c 2>$null
@@ -203,34 +204,8 @@ Record SKIP 'Dictates after the speakers or default mic change' 'the Windows run
 Record SKIP 'First dictation after the PC wakes from sleep' 'a GitHub runner can''t sleep and wake; check by hand'
 Record SKIP 'Real Bluetooth or USB mic plugged in or out mid-dictation' 'no such hardware on a runner'
 
-# 4g. Silent microphone: "No sound" notice with "Open Settings" (0.5.10+).
-if (App-Has 'id="status-action"') {
-  Focus-Target
-  W keys down ctrl | Out-Null; W keys down win | Out-Null
-  Start-Sleep -Milliseconds 4500
-  Ui-Dump 'no-sound'
-  $pattern = "(?i)no sound|can.t hear|couldn.t hear|is muted"
-  if (-not ((Get-Content (Join-Path $OUT 'ui-no-sound.txt')) -match $pattern)) {
-    Start-Sleep -Seconds 4      # the virtual cable's silence may not be digital zero: "Can't hear you" comes at 6 s
-    Ui-Dump 'no-sound'
-  }
-  Screenshot 'no-sound'
-  $notice = (Get-Content (Join-Path $OUT 'ui-no-sound.txt')) -match $pattern | Select-Object -First 1
-  if ($notice) { Record PASS 'Silent mic: ''No sound'' notice' $notice } else { Record FAIL 'Silent mic: ''No sound'' notice' "overlay showed: $(Ui-Text 'no-sound')" }
-  $pressed = W uia-press $APP_PROCESS 'Open Settings'
-  Start-Sleep -Seconds 3
-  W keys up win | Out-Null; W keys up ctrl | Out-Null
-  Start-Sleep -Seconds 2
-  Ui-Dump 'open-settings'
-  if ("$pressed" -like 'pressed*' -and (Ui-Text 'open-settings') -match '(?i)microphone') { Record PASS '''Open Settings'' opens the microphone settings' "$pressed" }
-  else { Record FAIL '''Open Settings'' opens the microphone settings' "press: $pressed; windows: $(App-Windows)" }
-  if ((Target-Text).Trim()) { Record FAIL 'Silent dictation types nothing' "typed: `"$(Target-Text)`"" } else { Record PASS 'Silent dictation types nothing' '' }
-  W keys tap escape | Out-Null
-} else {
-  Record SKIP 'Silent mic: ''No sound'' notice' 'this version has no microphone notices (added in 0.5.10)'
-}
-
-# 4h. Failed transcription: a "Missed" item with Retry and Save audio (0.5.10+).
+# 4g. Failed transcription (before 4h: Open Settings leaves the home window on Settings,
+# where the Missed item's buttons aren't shown): a "Missed" item with Retry and Save audio (0.5.10+).
 if (App-Has 'data-missed-action') {
   $ips = @('proxy.tryblipai.com', 'api.groq.com' | ForEach-Object { Resolve-DnsName -Name $_ -ErrorAction SilentlyContinue } |
     Where-Object { $_.IPAddress } | ForEach-Object { $_.IPAddress }) | Sort-Object -Unique
@@ -241,7 +216,7 @@ if (App-Has 'data-missed-action') {
   Focus-Target
   Ptt $phrases[4]
   $missed = $null
-  Wait-Until 60 { $n = History | Select-Object -First 1; if ($n -and $n.status -eq 'missed') { $script:missed = $n }; [bool]$script:missed } | Out-Null
+  Wait-Until 60 { $n = Get-BlipHistory | Select-Object -First 1; if ($n -and $n.status -eq 'missed') { $script:missed = $n }; [bool]$script:missed } | Out-Null
   Ui-Dump 'missed-error'
   Remove-NetFirewallRule -DisplayName 'blip-test-block-stt' -ErrorAction SilentlyContinue
   if ($profilesOff) { Set-NetFirewallProfile -Name $profilesOff -Enabled False }
@@ -260,11 +235,11 @@ if (App-Has 'data-missed-action') {
     else { Record FAIL 'Missed item: Save audio writes the recording' "press: $pressed; no new .wav/.mp3 in Documents, Downloads, Desktop or Music" }
     $pressed = W uia-press $APP_PROCESS 'Retry'
     $retried = $null
-    Wait-Until 60 { $r = History | Where-Object { "$($_.timestamp)" -eq "$($missed.timestamp)" } | Select-Object -First 1; if ($r -and $r.status -ne 'missed' -and $r.text) { $script:retried = $r.text }; [bool]$script:retried } | Out-Null
+    Wait-Until 60 { $r = Get-BlipHistory | Where-Object { "$($_.timestamp)" -eq "$($missed.timestamp)" } | Select-Object -First 1; if ($r -and $r.status -ne 'missed' -and $r.text) { $script:retried = $r.text }; [bool]$script:retried } | Out-Null
     if ($retried) { Judge 'Missed item: Retry transcribes it' $phrases[4] $retried | Out-Null }
     else { Record FAIL 'Missed item: Retry transcribes it' "press: $pressed; still Missed after 60 s" }
   } else {
-    $n = History | Select-Object -First 1
+    $n = Get-BlipHistory | Select-Object -First 1
     $newest = if ($n) { '{0} "{1}"' -f $n.status, $n.text } else { 'none' }
     Record FAIL 'Failed transcription is kept as a Missed item' "newest history item: $newest; overlay: $(Ui-Text 'missed-error')"
   }
@@ -272,12 +247,40 @@ if (App-Has 'data-missed-action') {
   Record SKIP 'Failed transcription is kept as a Missed item' 'this version has no Missed items (added in 0.5.10)'
 }
 
+# 4h. Silent microphone: "No sound" notice with "Open Settings" (0.5.10+).
+if (App-Has 'id="status-action"') {
+  Focus-Target
+  W keys down ctrl | Out-Null; W keys down win | Out-Null
+  Start-Sleep -Milliseconds 4500
+  Ui-Dump 'no-sound'
+  $pattern = "(?i)no sound|can.t hear|couldn.t hear|is muted"
+  if (-not ((Get-Content (Join-Path $OUT 'ui-no-sound.txt')) -match $pattern)) {
+    Start-Sleep -Seconds 4      # the virtual cable's silence may not be digital zero: "Can't hear you" comes at 6 s
+    Ui-Dump 'no-sound'
+  }
+  Screenshot 'no-sound'
+  $notice = (Get-Content (Join-Path $OUT 'ui-no-sound.txt')) -match $pattern | Select-Object -First 1
+  if ($notice) { Record PASS 'Silent mic: ''No sound'' notice' $notice } else { Record FAIL 'Silent mic: ''No sound'' notice' "overlay showed: $(Ui-Text 'no-sound')" }
+  $pressed = W uia-press $APP_PROCESS 'Open Settings'
+  Start-Sleep -Seconds 3
+  W keys up win | Out-Null; W keys up ctrl | Out-Null
+  Start-Sleep -Seconds 2
+  Ui-Dump 'open-settings'
+  # The app logs "[mic] open-settings from=overlay" when the button is used.
+  if ("$pressed" -like 'pressed*' -and ((Log-Has 'open-settings from=overlay') -or (Ui-Text 'open-settings') -match '(?i)test microphone')) { Record PASS '''Open Settings'' opens the microphone settings' "$pressed" }
+  else { Record FAIL '''Open Settings'' opens the microphone settings' "press: $pressed; the app didn't log it; windows: $(App-Windows); overlay after: $((Ui-Text 'open-settings') -replace '\|Blip AI\|.*$', '')" }
+  if ((Target-Text).Trim()) { Record FAIL 'Silent dictation types nothing' "typed: `"$(Target-Text)`"" } else { Record PASS 'Silent dictation types nothing' '' }
+  W keys tap escape | Out-Null
+} else {
+  Record SKIP 'Silent mic: ''No sound'' notice' 'this version has no microphone notices (added in 0.5.10)'
+}
+
 # History.
-$all = (History | ForEach-Object { $_.text }) -join ' '
-if ($all -match '(?i)quick brown fox' -and $all -match '(?i)quarterly report') { Record PASS 'Dictations saved to history' "$(@(History).Count) entries, including the push-to-talk and hands-free ones" }
+$all = (Get-BlipHistory | ForEach-Object { $_.text }) -join ' '
+if ($all -match '(?i)quick brown fox' -and $all -match '(?i)quarterly report') { Record PASS 'Dictations saved to history' "$(@(Get-BlipHistory).Count) entries, including the push-to-talk and hands-free ones" }
 else {
   $stores = python -c "import glob, json, os; [print(p, len(json.load(open(p, encoding='utf-8')).get('transcriptionHistory') or []), sorted(json.load(open(p, encoding='utf-8')).keys())[:12]) for p in glob.glob(os.path.join(os.environ['APPDATA'], '*', '**', 'config.json'), recursive=True) if 'blip' in p.lower()]" 2>&1
-  Record FAIL 'Dictations saved to history' "$(@(History).Count) entries read from $(App-Config). Stores: $($stores -join ' / ')"
+  Record FAIL 'Dictations saved to history' "$(@(Get-BlipHistory).Count) entries read from $(App-Config). Stores: $($stores -join ' / ')"
 }
 $log = App-Log
 if ($log) { Select-String -Path $log -Pattern '\[(stt|paste)-timing\]' | ForEach-Object { $_.Line } | Set-Content (Join-Path $OUT 'dictation-timing.txt') }
@@ -322,7 +325,7 @@ json.dump(cfg, open(p, 'w', encoding='utf-8'))" (App-Config)
     Start-Sleep -Seconds 6
     # The app logs "[auth] sign-in started from=overlay" and opens its sign-in window.
     if ("$pressed" -like 'pressed*' -and ((Log-Has 'sign-in started') -or (App-Windows) -match '(?i)welcome|sign')) { Record PASS "'Sign in' starts signing in again" "windows: $(App-Windows)" }
-    else { Record FAIL "'Sign in' starts signing in again" "press: $pressed; windows: $(App-Windows)" }
+    else { Ui-Dump 'after-sign-in-press'; Record FAIL "'Sign in' starts signing in again" "press: $pressed; the app didn't log it; windows: $(App-Windows); overlay after: $((Ui-Text 'after-sign-in-press') -replace '\|Blip AI\|.*$', '')" }
   } else {
     Record FAIL "Session ended: 'You're signed out' notice" "windows: $(App-Windows); text: $(Ui-Text 'signed-out')"
   }
@@ -340,6 +343,7 @@ if (Key-Server-Running) {
   Key-Server-Processes | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
 } else { Record PASS 'Key listener exits with the app' "after the app was $how" }
 Collect-CrashReports
+Copy-Item "$TARGET_FILE.events" (Join-Path $OUT 'target-box-events.txt') -ErrorAction SilentlyContinue
 
 # Relaunching with that ended session asks the user to sign in again.
 if ($hasSignInNotice) {

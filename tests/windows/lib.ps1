@@ -146,6 +146,13 @@ function Wait-Text([int]$Seconds = 30) {
 function Judge([string]$Name, [string]$Expected, [string]$Actual, [int]$Min = 70) {
   $front = if ($script:FrontAfterRelease) { "; window in front after the keys were released: $script:FrontAfterRelease" } else { '' }
   $script:FrontAfterRelease = $null
+  # What the text box itself got from 1 s before the keys were released (wtool target logs it).
+  $events = "$TARGET_FILE.events"
+  if ($script:ReleasedAt -and (Test-Path $events)) {
+    $since = $script:ReleasedAt.AddSeconds(-1).ToString('HH:mm:ss.fff')
+    $got = @(Get-Content $events -ErrorAction SilentlyContinue | Where-Object { $_.Length -ge 12 -and $_.Substring(0, 12) -ge $since } | ForEach-Object { $_.Substring(13) } | Select-Object -First 10)
+    $front += "; the text box got: $(if ($got.Count) { $got -join ', ' } else { 'no keys or focus changes' })"
+  }
   if (-not $Actual -or -not $Actual.Trim()) {
     Record FAIL $Name "nothing was typed into the target window within 30 s$front"
     return $false
