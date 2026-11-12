@@ -10,7 +10,8 @@
 //   wtool fg                        title of the window in front
 //   wtool windows PROCESS           visible top-level window titles of a process
 //   wtool uia-text PROCESS          the text of every element in the process's windows
-//   wtool uia-press PROCESS LABEL   click the first button whose name contains LABEL
+//   wtool uia-press PROCESS LABEL [--until-gone]
+//                                   click the first button whose name contains LABEL
 //   wtool screenshot FILE           PNG of the whole screen
 //   wtool speak-file FILE TEXT      synthesize TEXT (Windows' built-in voice) to a WAV file
 //   wtool play FILE                 play a WAV on the default output and wait until it ends
@@ -255,43 +256,96 @@ static class WTool
         }
     }
 
+    [DllImport("user32.dll")] static extern bool PostMessage(IntPtr hwnd, uint msg, IntPtr w, IntPtr l);
+    [DllImport("user32.dll")] static extern bool ScreenToClient(IntPtr hwnd, ref POINT p);
+
+    // The same click posted straight to the window: it skips Windows' mouse-activation step
+    // (WM_MOUSEACTIVATE), where a window that can't be activated may drop the click.
+    static void PostClick(IntPtr hwnd, POINT screen)
+    {
+        var c = screen;
+        ScreenToClient(hwnd, ref c);
+        var lp = new IntPtr(((c.Y & 0xFFFF) << 16) | (c.X & 0xFFFF));
+        PostMessage(hwnd, 0x0200, IntPtr.Zero, lp);          // WM_MOUSEMOVE
+        Thread.Sleep(100);
+        PostMessage(hwnd, 0x0201, new IntPtr(1), lp);        // WM_LBUTTONDOWN, MK_LBUTTON
+        Thread.Sleep(80);
+        PostMessage(hwnd, 0x0202, IntPtr.Zero, lp);          // WM_LBUTTONUP
+    }
+
+    static readonly Condition EnabledButtons = new AndCondition(
+        new PropertyCondition(AutomationElement.ControlTypeProperty, ControlType.Button),
+        new PropertyCondition(AutomationElement.IsEnabledProperty, true));
+
+    static AutomationElement FindButton(AutomationElement root, string label)
+    {
+        AutomationElementCollection all;
+        try { all = root.FindAll(TreeScope.Descendants, EnabledButtons); } catch { return null; }
+        foreach (AutomationElement b in all) {
+            string name = "";
+            try { name = b.Current.Name ?? ""; } catch { }
+            if (name.IndexOf(label, StringComparison.OrdinalIgnoreCase) >= 0) return b;
+        }
+        return null;
+    }
+
+    static bool StillShown(AutomationElement root, string label)
+    {
+        var b = FindButton(root, label);
+        if (b == null) return false;
+        try { return !b.Current.IsOffscreen; } catch { return false; }
+    }
+
     // Presses a button as a person does: brings its window to the front if something
-    // covers it, then clicks its middle with the mouse. UI Automation's Invoke is only the
-    // fallback: in run 6 it reported success on the overlay's "Sign in", but the page never
-    // saw a click.
-    static void UiaPress(string process, string label)
+    // covers it, then clicks its middle with the mouse; UI Automation's Invoke when it
+    // can't be reached. With --until-gone (for buttons that go away when used, like the
+    // overlay's), each way is checked and the next is tried if the button is still there:
+    // mouse click, posted click, Invoke. The output says which worked, or "no effect: …".
+    static void UiaPress(string process, string label, bool untilGone)
     {
         SetProcessDPIAware();   // UI Automation reports physical pixels
-        var buttons = new AndCondition(
-            new PropertyCondition(AutomationElement.ControlTypeProperty, ControlType.Button),
-            new PropertyCondition(AutomationElement.IsEnabledProperty, true));
         foreach (var root in Roots(process)) {
-            AutomationElementCollection all;
-            try { all = root.FindAll(TreeScope.Descendants, buttons); } catch { continue; }
-            foreach (AutomationElement b in all) {
-                string name = "";
-                try { name = b.Current.Name ?? ""; } catch { }
-                if (name.IndexOf(label, StringComparison.OrdinalIgnoreCase) < 0) continue;
-                string where = root.Current.Name;
-                var top = new IntPtr(root.Current.NativeWindowHandle);
-                var r = System.Windows.Rect.Empty;
-                try { r = b.Current.BoundingRectangle; } catch { }
-                if (!r.IsEmpty && r.Width > 1 && r.Height > 1) {
-                    var p = new POINT { X = (int)(r.X + r.Width / 2), Y = (int)(r.Y + r.Height / 2) };
-                    if (TopWindowAt(p) != top) { BringToFront(top); Thread.Sleep(400); }
-                    if (TopWindowAt(p) == top) {
-                        Click(p);
-                        Console.WriteLine("pressed \"" + name + "\" in " + where + " (clicked at " + p.X + "," + p.Y + ")");
-                        return;
-                    }
-                }
-                object ip;
-                if (b.TryGetCurrentPattern(InvokePattern.Pattern, out ip)) {
-                    ((InvokePattern)ip).Invoke();
-                    Console.WriteLine("pressed \"" + name + "\" in " + where + " (UI Automation Invoke: another window covers it)");
-                    return;
+            var b = FindButton(root, label);
+            if (b == null) continue;
+            string name = "", where = "";
+            try { name = b.Current.Name; where = root.Current.Name; } catch { }
+            var top = new IntPtr(root.Current.NativeWindowHandle);
+            var tried = new List<string>();
+            var r = System.Windows.Rect.Empty;
+            try { r = b.Current.BoundingRectangle; } catch { }
+            if (!r.IsEmpty && r.Width > 1 && r.Height > 1) {
+                var p = new POINT { X = (int)(r.X + r.Width / 2), Y = (int)(r.Y + r.Height / 2) };
+                if (TopWindowAt(p) != top) { BringToFront(top); Thread.Sleep(400); }
+                if (TopWindowAt(p) == top) {
+                    string under = "?";
+                    try {
+                        var e = AutomationElement.FromPoint(new System.Windows.Point(p.X, p.Y));
+                        under = e.Current.ControlType.ProgrammaticName.Replace("ControlType.", "") + " '" + e.Current.Name + "'";
+                    } catch { }
+                    Click(p);
+                    string how = "mouse click at " + p.X + "," + p.Y + " on " + under;
+                    if (!untilGone) { Console.WriteLine("pressed \"" + name + "\" in " + where + " (" + how + ")"); return; }
+                    Thread.Sleep(1500);
+                    if (!StillShown(root, label)) { Console.WriteLine("pressed \"" + name + "\" in " + where + " (" + how + ")"); return; }
+                    tried.Add(how + ": no effect");
+                    PostClick(top, p);
+                    Thread.Sleep(1500);
+                    if (!StillShown(root, label)) { Console.WriteLine("pressed \"" + name + "\" in " + where + " (posted click; " + string.Join("; ", tried) + ")"); return; }
+                    tried.Add("posted click: no effect");
+                } else {
+                    tried.Add("another window covers it");
                 }
             }
+            object ip;
+            if (b.TryGetCurrentPattern(InvokePattern.Pattern, out ip)) {
+                ((InvokePattern)ip).Invoke();
+                if (!untilGone) { Console.WriteLine("pressed \"" + name + "\" in " + where + " (UI Automation Invoke; " + string.Join("; ", tried) + ")"); return; }
+                Thread.Sleep(1500);
+                if (!StillShown(root, label)) { Console.WriteLine("pressed \"" + name + "\" in " + where + " (UI Automation Invoke; " + string.Join("; ", tried) + ")"); return; }
+                tried.Add("UI Automation Invoke: no effect");
+            }
+            Console.WriteLine("no effect: \"" + name + "\" in " + where + " stayed after " + string.Join("; ", tried));
+            return;
         }
         Console.WriteLine("no button \"" + label + "\" in " + process); Environment.Exit(2);
     }
@@ -331,7 +385,7 @@ static class WTool
             }
             else if (cmd == "windows" && a.Length == 2) { foreach (var w in TopWindows(Pids(a[1]))) Console.WriteLine(w.Value); }
             else if (cmd == "uia-text" && a.Length == 2) UiaText(a[1]);
-            else if (cmd == "uia-press" && a.Length == 3) UiaPress(a[1], a[2]);
+            else if (cmd == "uia-press" && (a.Length == 3 || (a.Length == 4 && a[3] == "--until-gone"))) UiaPress(a[1], a[2], a.Length == 4);
             else if (cmd == "screenshot" && a.Length == 2) Screenshot(a[1]);
             else if (cmd == "speak-file" && a.Length == 3) {
                 using (var s = new System.Speech.Synthesis.SpeechSynthesizer()) {

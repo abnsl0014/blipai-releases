@@ -226,8 +226,15 @@ if (App-Has 'data-missed-action') {
     Start-Sleep -Seconds 3
     $before = Get-Date
     $pressed = W uia-press $APP_PROCESS 'Save audio'
-    Start-Sleep -Seconds 3
-    W keys tap return | Out-Null                             # the Save dialog's default button
+    # Windows' Save dialog: bring it to the front, then Enter (its default button, Save).
+    if (Wait-Until 10 { (App-Windows) -match 'Save audio' }) {
+      W focus 'Save audio' | Out-Null
+      Start-Sleep -Milliseconds 800
+      W keys tap return | Out-Null
+      Wait-Until 10 { -not ((App-Windows) -match 'Save audio') } | Out-Null
+    } else {
+      $pressed = "$pressed; no Save dialog appeared"
+    }
     Start-Sleep -Seconds 3
     $saved = Get-ChildItem -Path ([Environment]::GetFolderPath('MyDocuments')), (Join-Path $env:USERPROFILE 'Downloads'), ([Environment]::GetFolderPath('Desktop')), ([Environment]::GetFolderPath('MyMusic')) -Include *.wav, *.mp3 -Recurse -Depth 1 -ErrorAction SilentlyContinue |
       Where-Object { $_.LastWriteTime -gt $before } | Select-Object -First 1
@@ -261,13 +268,16 @@ if (App-Has 'id="status-action"') {
   Screenshot 'no-sound'
   $notice = (Get-Content (Join-Path $OUT 'ui-no-sound.txt')) -match $pattern | Select-Object -First 1
   if ($notice) { Record PASS 'Silent mic: ''No sound'' notice' $notice } else { Record FAIL 'Silent mic: ''No sound'' notice' "overlay showed: $(Ui-Text 'no-sound')" }
-  $pressed = W uia-press $APP_PROCESS 'Open Settings'
-  Start-Sleep -Seconds 3
+  $pressed = W uia-press $APP_PROCESS 'Open Settings' --until-gone
   W keys up win | Out-Null; W keys up ctrl | Out-Null
-  Start-Sleep -Seconds 2
+  if ("$pressed" -notlike 'pressed*') {   # once more with the keys up (the notice stays 8 s)
+    Start-Sleep -Milliseconds 500
+    $pressed = "while holding the keys: $pressed; after releasing them: $(W uia-press $APP_PROCESS 'Open Settings' --until-gone)"
+  }
+  Start-Sleep -Seconds 3
   Ui-Dump 'open-settings'
   # The app logs "[mic] open-settings from=overlay" when the button is used.
-  if ("$pressed" -like 'pressed*' -and ((Log-Has 'open-settings from=overlay') -or (Ui-Text 'open-settings') -match '(?i)test microphone')) { Record PASS '''Open Settings'' opens the microphone settings' "$pressed" }
+  if ("$pressed" -match 'pressed "' -and ((Log-Has 'open-settings from=overlay') -or (Ui-Text 'open-settings') -match '(?i)test microphone')) { Record PASS '''Open Settings'' opens the microphone settings' "$pressed" }
   else { Record FAIL '''Open Settings'' opens the microphone settings' "press: $pressed; the app didn't log it; windows: $(App-Windows); overlay after: $((Ui-Text 'open-settings') -replace '\|Blip AI\|.*$', '')" }
   if ((Target-Text).Trim()) { Record FAIL 'Silent dictation types nothing' "typed: `"$(Target-Text)`"" } else { Record PASS 'Silent dictation types nothing' '' }
   W keys tap escape | Out-Null
@@ -312,19 +322,22 @@ json.dump(cfg, open(p, 'w', encoding='utf-8'))" (App-Config)
   $pressed = ''
   Ui-Dump 'signed-out'
   $notice = @(Get-Content (Join-Path $OUT 'ui-signed-out.txt') -ErrorAction SilentlyContinue) -match '(?i)signed out|sign in to keep' | Select-Object -First 1
-  if ($notice) { $pressed = W uia-press $APP_PROCESS 'Sign in' }
+  if ($notice) { $pressed = W uia-press $APP_PROCESS 'Sign in' --until-gone }
   W keys up win | Out-Null; W keys up ctrl | Out-Null
   if (-not $notice) {   # shown at release instead
     Start-Sleep -Seconds 1
     Ui-Dump 'signed-out-after'
     $notice = @(Get-Content (Join-Path $OUT 'ui-signed-out-after.txt') -ErrorAction SilentlyContinue) -match '(?i)signed out|sign in to keep' | Select-Object -First 1
-    if ($notice) { $pressed = W uia-press $APP_PROCESS 'Sign in' }
+    if ($notice) { $pressed = W uia-press $APP_PROCESS 'Sign in' --until-gone }
+  } elseif ("$pressed" -notlike 'pressed*') {   # once more with the keys up
+    Start-Sleep -Milliseconds 500
+    $pressed = "while holding the keys: $pressed; after releasing them: $(W uia-press $APP_PROCESS 'Sign in' --until-gone)"
   }
   if ($notice) {
     Record PASS "Session ended: 'You're signed out' notice" $notice
     Start-Sleep -Seconds 6
     # The app logs "[auth] sign-in started from=overlay" and opens its sign-in window.
-    if ("$pressed" -like 'pressed*' -and ((Log-Has 'sign-in started') -or (App-Windows) -match '(?i)welcome|sign')) { Record PASS "'Sign in' starts signing in again" "windows: $(App-Windows)" }
+    if ("$pressed" -match 'pressed "' -and ((Log-Has 'sign-in started') -or (App-Windows) -match '(?i)welcome|sign')) { Record PASS "'Sign in' starts signing in again" "windows: $(App-Windows)" }
     else { Ui-Dump 'after-sign-in-press'; Record FAIL "'Sign in' starts signing in again" "press: $pressed; the app didn't log it; windows: $(App-Windows); overlay after: $((Ui-Text 'after-sign-in-press') -replace '\|Blip AI\|.*$', '')" }
   } else {
     Record FAIL "Session ended: 'You're signed out' notice" "windows: $(App-Windows); text: $(Ui-Text 'signed-out')"
