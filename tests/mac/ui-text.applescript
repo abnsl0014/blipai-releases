@@ -1,8 +1,11 @@
 -- Prints the visible text of every window of an Electron app, one line per element,
 -- by turning on Chromium's accessibility tree (AXManualAccessibility) and walking it.
--- Usage: osascript tests/mac/ui-text.applescript Blip-AI
+-- With WINDOW, only the window of that name.
+-- Usage: osascript tests/mac/ui-text.applescript Blip-AI ["Blip AI Overlay"]
 on run argv
 	set procName to item 1 of argv
+	set onlyWindow to ""
+	if (count of argv) > 1 then set onlyWindow to item 2 of argv
 	set out to ""
 	with timeout of 90 seconds
 		tell application "System Events"
@@ -12,26 +15,30 @@ on run argv
 				end try
 				delay 2
 				repeat with w in windows
+					set wName to ""
 					try
-						set out to out & "== window: " & (name of w as text) & linefeed
+						set wName to name of w as text
 					end try
-					try
-						set els to entire contents of w
-						repeat with e in els
-							set t to ""
-							try
-								set v to value of e
-								if class of v is text then set t to v
-							end try
-							if t is "" then
+					if onlyWindow is "" or wName is onlyWindow then
+						set out to out & "== window: " & wName & linefeed
+						try
+							set els to entire contents of w
+							repeat with e in els
+								set t to ""
 								try
-									set n to name of e
-									if n is not missing value then set t to n as text
+									set v to value of e
+									if class of v is text then set t to v
 								end try
-							end if
-							if t is not "" then set out to out & t & linefeed
-						end repeat
-					end try
+								if t is "" then
+									try
+										set n to name of e
+										if n is not missing value then set t to n as text
+									end try
+								end if
+								if t is not "" then set out to out & t & linefeed
+							end repeat
+						end try
+					end if
 				end repeat
 			end tell
 		end tell

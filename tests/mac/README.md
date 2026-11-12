@@ -64,7 +64,8 @@ sign-in and dictation are skipped with a warning, and everything else still runs
    - Paste last transcript (Cmd+Ctrl+V)
    - system audio is muted while recording and restored after
    - dictating after the speakers change, and after a new default mic appears (as when
-     AirPods connect), without restarting the app
+     AirPods connect), without restarting the app: with Auto-detect it switches to the
+     new mic; with a mic chosen in Settings it keeps that one
    - on versions that have them (0.5.10+): a silent mic shows "No sound" and its
      **Open Settings** opens the microphone settings; a dictation whose transcription
      fails (the transcription servers are blocked for a moment) becomes a **Missed**
@@ -88,6 +89,10 @@ of each stage, the app's text at each stage, and the redacted logs.
   once, whereas `say` can take seconds to start talking on a cold runner. The default output
   is BlackHole 16ch, so Blip's "mute system audio while dictating" mutes that device and not
   the test's voice.
+- **Which mic the app uses.** Auto-detect prefers a real microphone to a virtual default
+  one. Apple-silicon runners have one, "Apple Virtual Sound Device", which hears nothing,
+  so there the test chooses BlackHole 2ch in the app's settings first, as a user picks a
+  mic. Intel runners have no other mic, so they test Auto-detect.
 - **Keyboard.** `keys.swift` posts Fn, Space, Esc and Cmd+Ctrl+V as HID events, the same
   events a keyboard produces. MacKeyServer's event tap and Electron's global shortcuts see
   them as real key presses. The Fn key is set to "Do Nothing" first, as onboarding asks.

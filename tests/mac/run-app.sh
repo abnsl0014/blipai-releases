@@ -32,10 +32,10 @@ launch() {  # like launch_app, keeping the app's stdout/stderr (console.error su
   open --stdout "$OUT/app-stdout.log" --stderr "$OUT/app-stderr.log" -a "$APP"
   wait_until 30 app_running
 }
-ui_dump() {  # ui_dump NAME → $OUT/ui-NAME.txt (Chromium can take a moment to build its tree)
+ui_dump() {  # ui_dump NAME [WINDOW] → $OUT/ui-NAME.txt (Chromium can take a moment to build its tree)
   local try
   for try in 1 2 3; do
-    with_timeout 90 osascript "$here/ui-text.applescript" "$APP_PROCESS" > "$OUT/ui-$1.txt" 2>&1 || true
+    with_timeout 90 osascript "$here/ui-text.applescript" "$APP_PROCESS" ${2:+"$2"} > "$OUT/ui-$1.txt" 2>&1 || true
     grep -qv '^== window' "$OUT/ui-$1.txt" && return 0
     sleep 3
   done
@@ -139,6 +139,26 @@ ui_dump signed-in
 if quit_app; then record PASS "Quits after onboarding" ""
 else record FAIL "Quits after onboarding" "still running 15 s after quit"; pkill -9 -x "$APP_PROCESS"; fi
 sleep 2
+# Auto-detect prefers a real microphone to a virtual default one. Apple-silicon runners
+# have one ("Apple Virtual Sound Device") that hears nothing, so there the test picks
+# BlackHole 2ch, as a user picks a mic in Settings. The app finds a saved mic by its
+# name when its id has changed, so the name is enough. Intel runners have no other
+# mic and test Auto-detect.
+mic_mode=auto
+other_inputs=$(SwitchAudioSource -a -t input | grep -vE '^(BlackHole|Null Audio Device)' | paste -sd, -)
+if [ -n "$other_inputs" ]; then
+  mic_mode=manual
+  python3 - "$(app_config)" << 'PY'
+import json, sys
+path = sys.argv[1]
+cfg = json.load(open(path))
+cfg.update(selectedMicrophoneId="chosen-in-settings", selectedMicrophoneLabel="BlackHole 2ch")
+json.dump(cfg, open(path, "w"))
+PY
+  record INFO "Microphone" "BlackHole 2ch chosen in the app (this runner also has $other_inputs, which hears nothing and which Auto-detect would pick)"
+else
+  record INFO "Microphone" "Auto-detect (the default input is BlackHole 2ch and the runner has no other mic)"
+fi
 launch
 sleep 15
 screenshot relaunch-signed-in
@@ -246,19 +266,30 @@ if SwitchAudioSource -t output -s "Null Audio Device" > /dev/null 2>&1; then
 else
   record SKIP "Dictates after the speakers change (no restart)" "no second output device on this runner"
 fi
+# The app mutes the default output while it records; BlackHole 16ch is both, so move
+# the output away first, or the new mic is muted too (as a real headset's mic isn't).
+SwitchAudioSource -t output -s "Null Audio Device" > /dev/null 2>&1
 SwitchAudioSource -t input -s "BlackHole 16ch" > /dev/null 2>&1
 phrase="Our new office opens on the first floor next month."
 focus_textedit
-"$KEYS" down fn; sleep 0.6; speak_to "BlackHole 16ch" "$phrase"; sleep 0.8; "$KEYS" up fn
-judge "Follows a new default microphone (no restart)" "$phrase" "$(wait_text 30)"
+if [ "$mic_mode" = auto ]; then
+  "$KEYS" down fn; sleep 0.6; speak_to "BlackHole 16ch" "$phrase"; sleep 0.8; "$KEYS" up fn
+  judge "Follows a new default microphone (no restart)" "$phrase" "$(wait_text 30)"
+else
+  "$KEYS" down fn; sleep 0.6; speak "$phrase"; sleep 0.8; "$KEYS" up fn
+  judge "Keeps the chosen microphone when the default mic changes" "$phrase" "$(wait_text 30)"
+fi
 SwitchAudioSource -t input -s "BlackHole 2ch" > /dev/null 2>&1
+SwitchAudioSource -t output -s "$outputs_before" > /dev/null 2>&1
 record SKIP "First dictation after the Mac wakes from sleep" "a GitHub runner can't sleep and wake; check by hand"
 record SKIP "Real AirPods or a USB mic plugged in or out mid-dictation" "no Bluetooth or USB hardware on a runner; the default-mic switch above is the closest check"
 
 # Features newer than 0.5.9 are tested only when the installed app has them.
 asar="$APP/Contents/Resources/app.asar"
 app_has() { grep -qaF -- "$1" "$asar"; }
-press() { with_timeout 70 osascript "$here/ui-press.applescript" "$APP_PROCESS" "$1" 2>&1; }
+press() {  # press LABEL [WINDOW] → "pressed …", or the reason it couldn't
+  with_timeout 70 osascript "$here/ui-press.applescript" "$APP_PROCESS" "$@" 2>&1 | sed 's/^.*execution error: //; s/ ([0-9-]*)$//'
+}
 newest_record() {  # prints "<status> <timestamp> <text…>" of the newest history record
   python3 -c '
 import json, sys
@@ -268,34 +299,7 @@ print(r.get("status") or "ok", r.get("timestamp") or 0, (r.get("text") or "").re
 ' "$(app_config)" 2>/dev/null
 }
 
-# --- 4g. Silent microphone: "No sound" notice with "Open Settings" -------------
-if app_has 'id="status-action"'; then
-  focus_textedit
-  "$KEYS" down fn
-  sleep 4.5            # digital silence from the virtual mic; the app warns after 2.5 s
-  ui_dump no-sound
-  screenshot no-sound
-  notice=$(grep -m1 -iE "no sound|can't hear|couldn't hear|is muted" "$OUT/ui-no-sound.txt")
-  if [ -n "$notice" ]; then record PASS "Silent mic: 'No sound' notice" "$(cut -c1-120 <<< "$notice")"
-  else record FAIL "Silent mic: 'No sound' notice" "overlay showed: $(grep -v '^== window' "$OUT/ui-no-sound.txt" | head -n 6 | tr '\n' '|' | cut -c1-200)"; fi
-  pressed=$(press "Open Settings")
-  sleep 3
-  "$KEYS" up fn
-  sleep 2
-  ui_dump open-settings
-  if grep -q '^pressed' <<< "$pressed" && grep -qiE "test microphone|microphone" "$OUT/ui-open-settings.txt"; then
-    record PASS "'Open Settings' opens the microphone settings" "$(cut -c1-80 <<< "$pressed")"
-  else
-    record FAIL "'Open Settings' opens the microphone settings" "press: $(cut -c1-100 <<< "$pressed"); windows: $(app_windows)"
-  fi
-  if textedit_has_text; then record FAIL "Silent dictation types nothing" "typed: \"$(textedit_text | cut -c1-80)\""
-  else record PASS "Silent dictation types nothing" ""; fi
-  osa -e 'tell application "System Events" to key code 53' > /dev/null 2>&1 || true   # close the settings sheet
-else
-  record SKIP "Silent mic: 'No sound' notice" "this version has no microphone notices (added in 0.5.10)"
-fi
-
-# --- 4h. Failed transcription: a "Missed" item with Retry and Save audio --------
+# --- 4g. Failed transcription: a "Missed" item with Retry and Save audio --------
 if app_has 'data-missed-action'; then
   ips=$( (dig +short A proxy.tryblipai.com; dig +short A api.groq.com; dig +short AAAA proxy.tryblipai.com; dig +short AAAA api.groq.com) \
     | grep -E '^[0-9a-f.:]+$' | grep -E '[.:]' | sort -u | xargs)
@@ -320,7 +324,7 @@ if app_has 'data-missed-action'; then
     record PASS "Failed transcription is kept as a Missed item" "overlay: $(grep -v '^== window' "$OUT/ui-missed-error.txt" | grep -iE 'fail|couldn|error|missed|retry|connect|internet' | head -n 1 | cut -c1-100)"
     open -a "$APP"; sleep 3
     touch "$OUT/.before-save"
-    pressed=$(press "Save audio")
+    pressed=$(press "Save audio" "Blip AI")
     sleep 2
     "$KEYS" tap return    # the Save panel's default button
     sleep 3
@@ -329,9 +333,9 @@ if app_has 'data-missed-action'; then
     if [ -n "$saved" ] && [ "$(stat -f %z "$saved")" -gt 10000 ]; then
       record PASS "Missed item: Save audio writes the recording" "$(basename "$saved"), $(stat -f %z "$saved") bytes, $(afinfo "$saved" 2>/dev/null | grep -m1 'estimated duration' | sed 's/.*: //')"
     else
-      record FAIL "Missed item: Save audio writes the recording" "press: $(cut -c1-80 <<< "$pressed"); no new .wav/.mp3 in Documents, Downloads, Desktop or home"
+      record FAIL "Missed item: Save audio writes the recording" "press: $(cut -c1-120 <<< "$pressed"); no new .wav/.mp3 in Documents, Downloads, Desktop or home"
     fi
-    pressed=$(press "Retry")
+    pressed=$(press "Retry" "Blip AI")
     retried=""
     deadline=$(( $(date +%s) + 60 ))
     while [ "$(date +%s)" -lt "$deadline" ]; do
@@ -345,7 +349,7 @@ print("" if r is None or r.get("status") == "missed" else (r.get("text") or "").
       sleep 1
     done
     if [ -n "$retried" ]; then judge "Missed item: Retry transcribes it" "$phrase" "$retried"
-    else record FAIL "Missed item: Retry transcribes it" "press: $(cut -c1-80 <<< "$pressed"); still Missed after 60 s"; fi
+    else record FAIL "Missed item: Retry transcribes it" "press: $(cut -c1-120 <<< "$pressed"); still Missed after 60 s"; fi
   else
     read -r st ts text <<< "$(newest_record)"
     record FAIL "Failed transcription is kept as a Missed item" "newest history item: $st \"$(cut -c1-80 <<< "$text")\"; overlay: $(grep -v '^== window' "$OUT/ui-missed-error.txt" | head -n 4 | tr '\n' '|' | cut -c1-160)"
@@ -353,6 +357,33 @@ print("" if r is None or r.get("status") == "missed" else (r.get("text") or "").
   osa -e 'tell application "TextEdit" to set text of document 1 to ""' > /dev/null 2>&1 || true
 else
   record SKIP "Failed transcription is kept as a Missed item" "this version has no Missed items (added in 0.5.10)"
+fi
+
+# --- 4h. Silent microphone: "No sound" notice with "Open Settings" -------------
+if app_has 'id="status-action"'; then
+  focus_textedit
+  "$KEYS" down fn
+  sleep 4.5            # digital silence from the virtual mic; the app warns after 2.5 s
+  ui_dump no-sound
+  screenshot no-sound
+  notice=$(grep -m1 -iE "no sound|can't hear|couldn't hear|is muted" "$OUT/ui-no-sound.txt")
+  if [ -n "$notice" ]; then record PASS "Silent mic: 'No sound' notice" "$(cut -c1-120 <<< "$notice")"
+  else record FAIL "Silent mic: 'No sound' notice" "overlay showed: $(grep -v '^== window' "$OUT/ui-no-sound.txt" | head -n 6 | tr '\n' '|' | cut -c1-200)"; fi
+  pressed=$(press "Open Settings" "Blip AI Overlay")
+  sleep 3
+  "$KEYS" up fn
+  sleep 2
+  ui_dump open-settings
+  if grep -q '^pressed' <<< "$pressed" && grep -qiE "test microphone|microphone" "$OUT/ui-open-settings.txt"; then
+    record PASS "'Open Settings' opens the microphone settings" "$(cut -c1-80 <<< "$pressed")"
+  else
+    record FAIL "'Open Settings' opens the microphone settings" "press: $(cut -c1-120 <<< "$pressed"); windows: $(app_windows)"
+  fi
+  if textedit_has_text; then record FAIL "Silent dictation types nothing" "typed: \"$(textedit_text | cut -c1-80)\""
+  else record PASS "Silent dictation types nothing" ""; fi
+  osa -e 'tell application "System Events" to key code 53' > /dev/null 2>&1 || true   # close the settings sheet
+else
+  record SKIP "Silent mic: 'No sound' notice" "this version has no microphone notices (added in 0.5.10)"
 fi
 
 # What the app logged about each dictation (release builds log only these lines).
@@ -401,23 +432,28 @@ payload["exp"] = int(time.time()) - 3600
 cfg["authToken"] = b64({"alg": "HS256", "typ": "JWT"}) + "." + b64(payload) + ".expired"
 json.dump(cfg, open(path, "w"))
 PY
+  # The notice shows for about 8 s, so look at the overlay alone (quick) and press its
+  # button straight away.
+  overlay_notice() { ui_dump "$1" "Blip AI Overlay"; grep -m1 -iE "signed out|sign in to keep" "$OUT/ui-$1.txt"; }
   focus_textedit
   "$KEYS" down fn
   sleep 2.5
-  ui_dump signed-out
+  notice=$(overlay_notice signed-out)
+  [ -n "$notice" ] && pressed=$(press "Sign in" "Blip AI Overlay")
   "$KEYS" up fn
-  sleep 2
-  ui_dump signed-out-after
-  notice=$(cat "$OUT/ui-signed-out.txt" "$OUT/ui-signed-out-after.txt" | grep -m1 -iE "signed out|sign in to keep")
+  if [ -z "$notice" ]; then    # shown at release instead
+    sleep 1
+    notice=$(overlay_notice signed-out-after)
+    [ -n "$notice" ] && pressed=$(press "Sign in" "Blip AI Overlay")
+  fi
   if [ -n "$notice" ]; then
     record PASS "Session ended: 'You're signed out' notice" "$(cut -c1-100 <<< "$notice")"
-    pressed=$(press "Sign in")
     sleep 6
     # The app logs "[auth] sign-in started from=overlay" and opens its sign-in window.
     if grep -q '^pressed' <<< "$pressed" && { grep -q 'sign-in started' "$(app_log)" 2>/dev/null || pgrep -x Safari > /dev/null || app_windows | grep -qiE 'welcome|sign'; }; then
       record PASS "'Sign in' starts signing in again" "windows: $(app_windows)"
     else
-      record FAIL "'Sign in' starts signing in again" "press: $(cut -c1-80 <<< "$pressed"); windows: $(app_windows)"
+      record FAIL "'Sign in' starts signing in again" "press: $(cut -c1-120 <<< "$pressed"); windows: $(app_windows)"
     fi
   else
     record FAIL "Session ended: 'You're signed out' notice" "app windows: $(app_windows); text: $(grep -v '^== window' "$OUT/ui-signed-out.txt" | grep -viE 'claim your gift|learn more' | head -n 5 | tr '\n' '|' | cut -c1-200)"
