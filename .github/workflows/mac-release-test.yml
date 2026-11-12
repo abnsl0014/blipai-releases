@@ -1,0 +1,90 @@
+# Tests a Blip AI Mac release on a real Mac, the way a user gets it:
+# download the DMG from this repo, install it, grant its permissions, launch it,
+# sign in, dictate into TextEdit with a virtual microphone and a synthetic Fn key,
+# and check the auto-updater's files. Scripts and details: tests/mac/README.md.
+#
+# Runs
+#   • when a release is published here (the moment it becomes "latest" for the updater)
+#   • by hand: Actions → "Mac release test" → Run workflow. Give a tag (a draft works)
+#     to test a build before publishing it; leave it empty for the latest release.
+#   • when the test itself changes
+#
+# Costs nothing: this repo is public, and GitHub's standard runners are free for
+# public repos. Needs the BLIP_TEST_EMAIL and BLIP_TEST_PASSWORD secrets (a test
+# account) for sign-in and dictation; without them those checks are skipped.
+name: Mac release test
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag to test, e.g. v0.5.10 (drafts work). Empty = the latest published release."
+        required: false
+        default: ""
+  push:
+    paths:
+      - "tests/mac/**"
+      - ".github/workflows/mac-release-test.yml"
+
+permissions:
+  # Write only because GitHub lists draft releases only to tokens that can push.
+  # Nothing in this workflow writes to the repo.
+  contents: write
+
+# One run at a time: every run signs in to the same test account.
+concurrency:
+  group: mac-release-test
+  cancel-in-progress: false
+
+jobs:
+  mac:
+    name: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-15]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 40
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up the runner (virtual mic, keyboard tool, Fn key, TextEdit)
+        run: bash tests/mac/setup-runner.sh
+
+      - name: Pick the release and download its Mac files
+        env:
+          REQUESTED_TAG: ${{ github.event.release.tag_name || inputs.tag }}
+        run: bash tests/mac/select-release.sh
+
+      - name: Check the updater files (latest-mac.yml, hashes, signed zips)
+        run: bash tests/mac/verify-release.sh
+
+      - name: Install from the DMG and check the installed app
+        run: bash tests/mac/install-app.sh
+
+      - name: Grant the app's macOS permissions
+        run: bash tests/mac/grant-permissions.sh
+
+      - name: Launch, sign in, dictate, quit
+        timeout-minutes: 15
+        env:
+          BLIP_TEST_EMAIL: ${{ secrets.BLIP_TEST_EMAIL }}
+          BLIP_TEST_PASSWORD: ${{ secrets.BLIP_TEST_PASSWORD }}
+        run: bash tests/mac/run-app.sh
+
+      - name: Report
+        if: always()
+        run: bash tests/mac/report.sh
+
+      - name: Upload screenshots and logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mac-release-test-${{ matrix.os }}
+          path: ${{ runner.temp }}/blip-test
+          retention-days: 14
+          if-no-files-found: warn
