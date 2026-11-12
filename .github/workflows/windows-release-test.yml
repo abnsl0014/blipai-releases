@@ -1,0 +1,87 @@
+# Tests a Blip AI Windows release on a real Windows machine, the way a user gets it:
+# download the installer from this repo, install it silently, launch it, sign in,
+# dictate into a text box through a virtual microphone (VB-CABLE) with synthetic key
+# presses, and check the auto-updater's files. Scripts: tests/windows/ (the Mac
+# version is mac-release-test.yml and tests/mac/; both share the README there).
+#
+# Runs when a release is published, by hand (Run workflow, optional tag; drafts work),
+# and when the test itself changes (a "Test-tag: v0.5.10" line in the commit message
+# picks the tag). Free on this public repo. Sign-in and dictation need the
+# BLIP_TEST_EMAIL and BLIP_TEST_PASSWORD secrets.
+name: Windows release test
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag to test, e.g. v0.5.10 (drafts work). Empty = the latest published release."
+        required: false
+        default: ""
+  push:
+    paths:
+      - "tests/windows/**"
+      - ".github/workflows/windows-release-test.yml"
+
+permissions:
+  # Write only because GitHub lists draft releases only to tokens that can push.
+  # Nothing in this workflow writes to the repo.
+  contents: write
+
+# One run at a time: every run signs in to the same test account.
+concurrency:
+  group: windows-release-test
+  cancel-in-progress: false
+
+jobs:
+  windows:
+    name: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-2025]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 50
+    defaults:
+      run:
+        shell: pwsh
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up the runner (audio service, VB-CABLE, helper tool)
+        run: ./tests/windows/setup-runner.ps1
+
+      - name: Pick the release and download its Windows files
+        env:
+          REQUESTED_TAG: ${{ github.event.release.tag_name || inputs.tag }}
+          COMMIT_MESSAGE: ${{ github.event.head_commit.message }}
+        run: ./tests/windows/select-release.ps1
+
+      - name: Check the updater files (latest.yml, hashes, signature)
+        run: ./tests/windows/verify-release.ps1
+
+      - name: Update path, then install and check the installed app
+        run: ./tests/windows/install-app.ps1
+
+      - name: Launch, sign in, dictate, quit
+        timeout-minutes: 25
+        env:
+          BLIP_TEST_EMAIL: ${{ secrets.BLIP_TEST_EMAIL }}
+          BLIP_TEST_PASSWORD: ${{ secrets.BLIP_TEST_PASSWORD }}
+        run: ./tests/windows/run-app.ps1
+
+      - name: Report
+        if: always()
+        run: ./tests/windows/report.ps1
+
+      - name: Upload screenshots and logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-release-test-${{ matrix.os }}
+          path: ${{ runner.temp }}/blip-test
+          retention-days: 14
+          if-no-files-found: warn
