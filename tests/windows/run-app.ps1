@@ -227,7 +227,8 @@ if (App-Has 'data-missed-action') {
     else { Record FAIL 'Missed item: Retry transcribes it' "press: $pressed; still Missed after 60 s" }
   } else {
     $n = History | Select-Object -First 1
-    Record FAIL 'Failed transcription is kept as a Missed item' "newest history item: $(if ($n) { "$($n.status) `"$($n.text)`"" } else { 'none' }); overlay: $(Ui-Text 'missed-error')"
+    $newest = if ($n) { '{0} "{1}"' -f $n.status, $n.text } else { 'none' }
+    Record FAIL 'Failed transcription is kept as a Missed item' "newest history item: $newest; overlay: $(Ui-Text 'missed-error')"
   }
 } else {
   Record SKIP 'Failed transcription is kept as a Missed item' 'this version has no Missed items (added in 0.5.10)'

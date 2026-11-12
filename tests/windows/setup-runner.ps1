@@ -22,7 +22,8 @@ foreach ($dll in 'UIAutomationClient.dll', 'UIAutomationTypes.dll', 'WindowsBase
   }
   $refs += $(if ($path) { $path } else { $dll })
 }
-$cscOut = & $csc /nologo /optimize /out:$WTOOL ($refs | ForEach-Object { "/r:$_" }) "$PSScriptRoot/wtool.cs" 2>&1
+$cscOut = & $csc /nologo /optimize "/out:$WTOOL" ($refs | ForEach-Object { "/r:$_" }) (Join-Path $PSScriptRoot 'wtool.cs') 2>&1
+$cscOut | Set-Content (Join-Path $OUT 'csc.txt')
 if ($LASTEXITCODE -ne 0) { Record FAIL 'Build the helper tool' (($cscOut | Select-Object -Last 3) -join ' '); exit 0 }
 
 # --- audio --------------------------------------------------------------------------
