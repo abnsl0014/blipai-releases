@@ -8,8 +8,8 @@
 #      dictating after the speakers change and after a new default mic appears, and,
 #      when the app has them (0.5.10+): the "No sound" notice and its Open Settings,
 #      a failed transcription kept as a Missed item with Save audio and Retry
-#   5. quit: the app and its key listener exit
-#   6. (0.5.10+) the session ends: the "You're signed out" notice and its Sign in
+#   5. (0.5.10+) the session ends while the app runs: "You're signed out" and Sign in
+#   6. quit: the app and its key listener exit; relaunching then shows sign-in
 # Speech comes from `say` into the virtual mic, keys from tests/mac/keys.swift.
 set -uo pipefail
 here="$(cd "$(dirname "$0")" && pwd)"
@@ -62,7 +62,10 @@ wait_text() {  # wait_text SECONDS → prints TextEdit's text once something was
 judge() {  # judge CHECK EXPECTED ACTUAL [MIN_RECALL%]
   local name="$1" expected="$2" actual="$3" min="${4:-70}" recall
   if [ -z "$(printf '%s' "$actual" | tr -d '[:space:]')" ]; then
-    record FAIL "$name" "nothing was typed into TextEdit within 30 s"
+    # What the app showed instead (its overlay message), for the report.
+    local slug; slug=$(tr -cs 'A-Za-z0-9' '-' <<< "$name" | cut -c1-40)
+    ui_dump "nothing-typed-$slug"
+    record FAIL "$name" "nothing was typed into TextEdit within 30 s; app showed: $(grep -v '^== window' "$OUT/ui-nothing-typed-$slug.txt" | grep -viE 'claim your gift|learn more' | head -n 6 | tr '\n' '|' | cut -c1-200)"
     return 1
   fi
   recall=$(word_recall "$actual" "$expected")
@@ -212,8 +215,13 @@ speak "This sentence should never be typed."
 sleep 10
 if textedit_has_text; then record FAIL "Esc cancels a hands-free dictation" "typed: \"$(textedit_text | cut -c1-120)\""
 else record PASS "Esc cancels a hands-free dictation" "nothing typed in 10 s"; fi
-"$KEYS" chord fn+space > /dev/null 2>&1 || true   # in case Esc didn't stop it
-sleep 3
+# The app mutes system audio while it records, so "still muted" means Esc left the
+# recording running: stop it, or every later shortcut is ignored.
+if [ "$(muted)" = "true" ]; then
+  record FAIL "Esc stops the recording" "still recording 10 s after Esc"
+  "$KEYS" chord fn+space > /dev/null 2>&1 || true
+  sleep 3
+fi
 osa -e 'tell application "TextEdit" to set text of document 1 to ""' > /dev/null 2>&1 || true
 
 # 4e. Paste last transcript (Cmd+Ctrl+V) pastes the last finished dictation again.
@@ -369,22 +377,14 @@ else
   record FAIL "Dictations saved to history" "$history_count entries; push-to-talk found: $has_ptt, hands-free found: $has_handsfree"
 fi
 
-# --- 5. Quit ------------------------------------------------------------------
-if quit_app; then record PASS "Quits" ""; else record FAIL "Quits" "still running 15 s after quit"; fi
-sleep 2
-if key_server_running; then record FAIL "Key listener exits with the app" "MacKeyServer still running"
-else record PASS "Key listener exits with the app" ""; fi
-collect_crash_reports
-
-# End this session on the server so its refresh token stops working (the logs are public).
-# scope=local: only this runner's session, never the account's other devices.
+# --- 5. The session ends while the app runs: "Sign in" notice (0.5.10+) ---------
+# What a user sees when their session can no longer be renewed. End this session on
+# the server (scope=local: only this runner's session, never the account's other
+# devices; also needed because the logs are public), then give the running app an
+# expired access token, as after a long sleep. electron-store reads its file on
+# every access, so the running app sees it at the next Fn press.
 curl -sS --max-time 30 -o /dev/null -X POST "$SUPABASE_URL/auth/v1/logout?scope=local" \
   -H "apikey: $SUPABASE_KEY" -H "Authorization: Bearer $access" || true
-
-# --- 6. The session ended: "Sign in" notice (0.5.10+) --------------------------
-# What a user sees when their session can no longer be renewed. The server side is
-# already ended above; the app still holds an access token that is valid for up to an
-# hour, so give it an expired one, as after a long sleep.
 if app_has 'id="status-action"'; then
   python3 - "$(app_config)" << 'PY'
 import base64, json, sys, time
@@ -401,8 +401,6 @@ payload["exp"] = int(time.time()) - 3600
 cfg["authToken"] = b64({"alg": "HS256", "typ": "JWT"}) + "." + b64(payload) + ".expired"
 json.dump(cfg, open(path, "w"))
 PY
-  launch
-  sleep 15
   focus_textedit
   "$KEYS" down fn
   sleep 2.5
@@ -412,21 +410,35 @@ PY
   ui_dump signed-out-after
   notice=$(cat "$OUT/ui-signed-out.txt" "$OUT/ui-signed-out-after.txt" | grep -m1 -iE "signed out|sign in to keep")
   if [ -n "$notice" ]; then
-    record PASS "Ended session: 'You're signed out' notice" "$(cut -c1-100 <<< "$notice")"
+    record PASS "Session ended: 'You're signed out' notice" "$(cut -c1-100 <<< "$notice")"
     pressed=$(press "Sign in")
     sleep 6
-    record INFO "After pressing 'Sign in'" "$(cut -c1-60 <<< "$pressed"); app windows: $(app_windows); browser running: $(pgrep -lx Safari > /dev/null && echo Safari || echo none)"
     if grep -q '^pressed' <<< "$pressed" && { pgrep -x Safari > /dev/null || app_windows | grep -qi welcome; }; then
       record PASS "'Sign in' starts signing in again" "opened $(pgrep -x Safari > /dev/null && echo 'the browser' || echo 'onboarding')"
     else
       record FAIL "'Sign in' starts signing in again" "press: $(cut -c1-80 <<< "$pressed"); windows: $(app_windows)"
     fi
   else
-    record FAIL "Ended session: 'You're signed out' notice" "app windows: $(app_windows); text: $(grep -v '^== window' "$OUT/ui-signed-out.txt" | head -n 5 | tr '\n' '|' | cut -c1-200)"
+    record FAIL "Session ended: 'You're signed out' notice" "app windows: $(app_windows); text: $(grep -v '^== window' "$OUT/ui-signed-out.txt" | grep -viE 'claim your gift|learn more' | head -n 5 | tr '\n' '|' | cut -c1-200)"
   fi
   if textedit_has_text; then record FAIL "Signed out: nothing is typed" "typed: \"$(textedit_text | cut -c1-80)\""; fi
-  quit_app || pkill -9 -x "$APP_PROCESS"
 else
-  record SKIP "Ended session: 'You're signed out' notice" "this version has no sign-in notice (added in 0.5.10)"
+  record SKIP "Session ended: 'You're signed out' notice" "this version has no sign-in notice (added in 0.5.10)"
+fi
+
+# --- 6. Quit ------------------------------------------------------------------
+if quit_app; then record PASS "Quits" ""; else record FAIL "Quits" "still running 15 s after quit"; pkill -9 -x "$APP_PROCESS"; fi
+sleep 2
+if key_server_running; then record FAIL "Key listener exits with the app" "MacKeyServer still running"
+else record PASS "Key listener exits with the app" ""; fi
+collect_crash_reports
+
+# Relaunching with that ended session asks the user to sign in again.
+if app_has 'id="status-action"'; then
+  launch
+  sleep 15
+  if app_windows | grep -qi welcome; then record PASS "Relaunch with an ended session shows sign-in" "windows: $(app_windows)"
+  else record FAIL "Relaunch with an ended session shows sign-in" "windows: $(app_windows)"; fi
+  quit_app || pkill -9 -x "$APP_PROCESS"
 fi
 exit 0
