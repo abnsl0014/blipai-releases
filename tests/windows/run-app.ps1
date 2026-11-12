@@ -43,10 +43,25 @@ function Ptt([string]$Phrase) {   # hold Ctrl+Win, speak, release
   if ($Phrase) { Speak $Phrase }
   Start-Sleep -Milliseconds 800
   W keys up win | Out-Null; W keys up ctrl | Out-Null
+  $script:ReleasedAt = Get-Date
+  Watch-Front
 }
-function History {
-  $h = Config-Value 'transcriptionHistory'
-  if ($h) { return @($h) } else { return @() }
+# The windows in front over the next 3 s, while the app transcribes and pastes. When
+# nothing reaches the text box, Judge reports them.
+function Watch-Front {
+  $seen = New-Object System.Collections.Generic.List[string]
+  foreach ($i in 1..12) {
+    $t = "$(W fg)"
+    if (-not $seen.Contains($t)) { $seen.Add($t) }
+    Start-Sleep -Milliseconds 250
+  }
+  $script:FrontAfterRelease = ($seen | ForEach-Object { "'$_'" }) -join ' then '
+}
+function History {   # status, timestamp and text of each history item, newest first
+  $c = App-Config
+  if (-not $c) { return @() }
+  $json = python -c "import json, sys; h = json.load(open(sys.argv[1], encoding='utf-8')).get('transcriptionHistory') or []; print(json.dumps([{'status': r.get('status') or 'ok', 'timestamp': str(r.get('timestamp') or ''), 'text': r.get('text') or ''} for r in h if isinstance(r, dict)]))" $c 2>$null
+  if ($json) { return @($json | ConvertFrom-Json) } else { return @() }
 }
 function Log-Has([string]$Pattern) { $l = App-Log; $l -and (Select-String -Path $l -Pattern $Pattern -Quiet) }
 function Collect-CrashReports {
@@ -55,13 +70,15 @@ function Collect-CrashReports {
     ForEach-Object { Copy-Item $_.FullName $OUT }
 }
 
-# One virtual cable here: the default output is the test's voice, so turn off Blip's
-# "mute system audio while dictating" before first launch (Windows paths ignore case,
-# so this is the app's own settings folder).
+# One virtual cable here: whatever plays on the default output comes back on the mic.
+# So before first launch, turn off two of Blip's settings: "mute system audio while
+# dictating" (it would silence the test's voice) and its sound effects (its start chime,
+# at -7 dBFS in run 6, would be heard as the mic picking up sound). Windows paths
+# ignore case, so this is the app's own settings folder.
 $seedDir = Join-Path $env:APPDATA 'Blip-AI'
 New-Item -ItemType Directory -Force -Path $seedDir | Out-Null
-'{"muteSystemAudioDuringDictation": false}' | Set-Content -Path (Join-Path $seedDir 'config.json') -Encoding utf8
-Record INFO 'System audio mute while dictating' 'turned off on Windows: the runner has one virtual audio device, and muting it would silence the test voice'
+'{"muteSystemAudioDuringDictation": false, "muteSoundEffects": true}' | Set-Content -Path (Join-Path $seedDir 'config.json') -Encoding utf8
+Record INFO 'Settings changed for this runner' 'system audio mute while dictating: off; sound effects: muted. The runner has one virtual audio device, so its speaker plays into its mic'
 
 # --- 1. First launch, signed out ---------------------------------------------------
 if (Launch) { Record PASS 'Launches after install' "pid $((Get-Process -Name $APP_PROCESS | Select-Object -First 1).Id)" }
@@ -140,10 +157,10 @@ Render-Speech $phrases
 Focus-Target
 $t0 = Get-Date
 Ptt $phrases[0]
-$released = Get-Date
 $text = Wait-Text 30
 if (Judge 'Push-to-talk (hold Ctrl+Win) types into the focused app' $phrases[0] $text) {
-  Record INFO 'Push-to-talk: keys released -> text in the window' "$([int]((Get-Date) - $released).TotalMilliseconds - 2000) ms"
+  # The text box writes its file when text arrives.
+  Record INFO 'Push-to-talk: keys released -> text in the window' "$([int]((Get-Item $TARGET_FILE).LastWriteTime - $script:ReleasedAt).TotalMilliseconds) ms"
 }
 Screenshot 'push-to-talk'
 
@@ -152,6 +169,7 @@ Focus-Target
 W keys chord ctrl+win+space | Out-Null
 Start-Sleep -Milliseconds 800; Speak $phrases[1]; Start-Sleep -Milliseconds 800
 W keys chord ctrl+win+space | Out-Null
+Watch-Front
 Judge 'Hands-free (Ctrl+Win+Space to start and stop)' $phrases[1] (Wait-Text 30) | Out-Null
 
 # 4c. Filler words.

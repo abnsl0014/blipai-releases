@@ -10,7 +10,7 @@
 //   wtool fg                        title of the window in front
 //   wtool windows PROCESS           visible top-level window titles of a process
 //   wtool uia-text PROCESS          the text of every element in the process's windows
-//   wtool uia-press PROCESS LABEL   invoke the first button whose name contains LABEL
+//   wtool uia-press PROCESS LABEL   click the first button whose name contains LABEL
 //   wtool screenshot FILE           PNG of the whole screen
 //   wtool speak-file FILE TEXT      synthesize TEXT (Windows' built-in voice) to a WAV file
 //   wtool play FILE                 play a WAV on the default output and wait until it ends
@@ -141,22 +141,50 @@ static class WTool
         return set;
     }
 
+    static bool BringToFront(IntPtr hwnd)
+    {
+        uint pid;
+        uint fg = GetWindowThreadProcessId(GetForegroundWindow(), out pid);
+        uint me = GetCurrentThreadId();
+        keybd_event(0xA4, 0, 0, IntPtr.Zero); keybd_event(0xA4, 0, 2, IntPtr.Zero); // Alt lifts the foreground lock
+        AttachThreadInput(me, fg, true);
+        ShowWindow(hwnd, 9);
+        bool ok = SetForegroundWindow(hwnd);
+        AttachThreadInput(me, fg, false);
+        return ok;
+    }
+
     static void Focus(string title)
     {
         foreach (var w in TopWindows(null)) {
             if (w.Value.IndexOf(title, StringComparison.OrdinalIgnoreCase) < 0) continue;
-            uint pid;
-            uint fg = GetWindowThreadProcessId(GetForegroundWindow(), out pid);
-            uint me = GetCurrentThreadId();
-            keybd_event(0xA4, 0, 0, IntPtr.Zero); keybd_event(0xA4, 0, 2, IntPtr.Zero); // Alt lifts the foreground lock
-            AttachThreadInput(me, fg, true);
-            ShowWindow(w.Key, 9);
-            bool ok = SetForegroundWindow(w.Key);
-            AttachThreadInput(me, fg, false);
+            bool ok = BringToFront(w.Key);
             Console.WriteLine((ok ? "focused " : "focus refused ") + w.Value);
             return;
         }
         Console.WriteLine("no window titled " + title); Environment.Exit(2);
+    }
+
+    // ---- mouse -----------------------------------------------------------------------
+    [StructLayout(LayoutKind.Sequential)] struct POINT { public int X; public int Y; }
+    [DllImport("user32.dll")] static extern bool SetCursorPos(int x, int y);
+    [DllImport("user32.dll")] static extern IntPtr WindowFromPoint(POINT p);
+    [DllImport("user32.dll")] static extern IntPtr GetAncestor(IntPtr hwnd, uint flags);
+    [DllImport("user32.dll")] static extern bool SetProcessDPIAware();
+    const uint MOUSEEVENTF_LEFTDOWN = 0x2, MOUSEEVENTF_LEFTUP = 0x4, GA_ROOT = 2;
+
+    static IntPtr TopWindowAt(POINT p) { return GetAncestor(WindowFromPoint(p), GA_ROOT); }
+
+    static void Click(POINT p)
+    {
+        SetCursorPos(p.X, p.Y);
+        Thread.Sleep(150);
+        var down = new INPUT { type = 0 }; down.u.mi.dwFlags = MOUSEEVENTF_LEFTDOWN;
+        var up = new INPUT { type = 0 }; up.u.mi.dwFlags = MOUSEEVENTF_LEFTUP;
+        SendInput(1, new[] { down }, Marshal.SizeOf(typeof(INPUT)));
+        Thread.Sleep(60);
+        SendInput(1, new[] { up }, Marshal.SizeOf(typeof(INPUT)));
+        Thread.Sleep(100);
     }
 
     // ---- UI Automation (Electron exposes its page through it) ----------------------
@@ -188,8 +216,13 @@ static class WTool
         }
     }
 
+    // Presses a button as a person does: brings its window to the front if something
+    // covers it, then clicks its middle with the mouse. UI Automation's Invoke is only the
+    // fallback: in run 6 it reported success on the overlay's "Sign in", but the page never
+    // saw a click.
     static void UiaPress(string process, string label)
     {
+        SetProcessDPIAware();   // UI Automation reports physical pixels
         var buttons = new AndCondition(
             new PropertyCondition(AutomationElement.ControlTypeProperty, ControlType.Button),
             new PropertyCondition(AutomationElement.IsEnabledProperty, true));
@@ -200,10 +233,23 @@ static class WTool
                 string name = "";
                 try { name = b.Current.Name ?? ""; } catch { }
                 if (name.IndexOf(label, StringComparison.OrdinalIgnoreCase) < 0) continue;
+                string where = root.Current.Name;
+                var top = new IntPtr(root.Current.NativeWindowHandle);
+                var r = System.Windows.Rect.Empty;
+                try { r = b.Current.BoundingRectangle; } catch { }
+                if (!r.IsEmpty && r.Width > 1 && r.Height > 1) {
+                    var p = new POINT { X = (int)(r.X + r.Width / 2), Y = (int)(r.Y + r.Height / 2) };
+                    if (TopWindowAt(p) != top) { BringToFront(top); Thread.Sleep(400); }
+                    if (TopWindowAt(p) == top) {
+                        Click(p);
+                        Console.WriteLine("pressed \"" + name + "\" in " + where + " (clicked at " + p.X + "," + p.Y + ")");
+                        return;
+                    }
+                }
                 object ip;
                 if (b.TryGetCurrentPattern(InvokePattern.Pattern, out ip)) {
                     ((InvokePattern)ip).Invoke();
-                    Console.WriteLine("pressed \"" + name + "\" in " + root.Current.Name);
+                    Console.WriteLine("pressed \"" + name + "\" in " + where + " (UI Automation Invoke: another window covers it)");
                     return;
                 }
             }

@@ -144,7 +144,12 @@ function Wait-Text([int]$Seconds = 30) {
   return ''
 }
 function Judge([string]$Name, [string]$Expected, [string]$Actual, [int]$Min = 70) {
-  if (-not $Actual -or -not $Actual.Trim()) { Record FAIL $Name 'nothing was typed into the target window within 30 s'; return $false }
+  $front = if ($script:FrontAfterRelease) { "; window in front after the keys were released: $script:FrontAfterRelease" } else { '' }
+  $script:FrontAfterRelease = $null
+  if (-not $Actual -or -not $Actual.Trim()) {
+    Record FAIL $Name "nothing was typed into the target window within 30 s$front"
+    return $false
+  }
   $recall = Word-Recall $Actual $Expected
   $shown = ($Actual -replace '\s+', ' ').Trim()
   if ($shown.Length -gt 140) { $shown = $shown.Substring(0, 140) }
