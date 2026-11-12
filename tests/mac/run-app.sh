@@ -333,8 +333,34 @@ if app_has 'data-missed-action'; then
     open -a "$APP"; sleep 3
     touch "$OUT/.before-save"
     pressed=$(press "Save audio" "Blip AI")
-    sleep 2
-    "$KEYS" tap return    # the Save panel's default button
+    # Click Save in the save panel (a sheet on the home window). A Return key went to
+    # whichever app was in front, which wasn't always Blip (run 16).
+    save_click=$(osa - "$APP_PROCESS" << 'OSA' 2>&1
+on run argv
+  tell application "System Events" to tell process (item 1 of argv)
+    repeat 20 times
+      repeat with w in windows
+        try
+          if exists sheet 1 of w then
+            click button "Save" of sheet 1 of w
+            return "clicked Save in a sheet of " & (name of w)
+          end if
+        end try
+        try
+          if (name of w) is "Save" then
+            click button "Save" of w
+            return "clicked Save in the Save window"
+          end if
+        end try
+      end repeat
+      delay 0.5
+    end repeat
+  end tell
+  return "no save panel within 10 s"
+end run
+OSA
+)
+    pressed="$pressed; $save_click"
     sleep 3
     saved=$(find "$HOME/Documents" "$HOME/Downloads" "$HOME/Desktop" "$HOME" -maxdepth 1 -type f \
               \( -name '*.wav' -o -name '*.mp3' \) -newer "$OUT/.before-save" 2>/dev/null | head -n 1)
@@ -399,6 +425,10 @@ log=$(app_log)
 if [ -n "$log" ]; then
   tail -n +"$((log_before + 1))" "$log" | grep -E '\[(stt|paste)-timing\]' > "$OUT/dictation-timing.txt" || true
   record INFO "App's dictation timing lines" "$(wc -l < "$OUT/dictation-timing.txt" | tr -d ' ') lines: $(grep -m1 'stt-timing\] client' "$OUT/dictation-timing.txt" | sed 's/.*\[stt-timing\]//' | cut -c1-160)"
+fi
+
+if [ -s "$OUT/sox-retries.txt" ]; then
+  record INFO "Test voice played a second time" "$(wc -l < "$OUT/sox-retries.txt" | tr -d ' ') time(s): sox hung opening the virtual device (sox-retries.txt)"
 fi
 
 # History: the app keeps finished dictations in its store (the home window lists them).

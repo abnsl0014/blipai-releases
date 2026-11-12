@@ -85,8 +85,16 @@ speak() {  # speak "text" → plays it into BlackHole 2ch and returns when it ha
   speak_to "BlackHole 2ch" "$1"
 }
 speak_to() {  # speak_to DEVICE "text" → the same, into another virtual device
+  # Now and then sox hangs opening the device and plays nothing (run 16: twice, for
+  # its whole time limit). The phrases are under 6 s, so give up after 12 s and play
+  # it once more; the dictation then just has a pause before the words.
   render_speech "$2"
-  with_timeout 30 sox -q "$(speech_file "$2")" -t coreaudio "$1"
+  local try
+  for try in 1 2; do
+    with_timeout 12 sox -q "$(speech_file "$2")" -t coreaudio "$1" && return 0
+    echo "$(date -u +%T) sox into $1 failed or hung (try $try): $2" >> "$OUT/sox-retries.txt"
+  done
+  return 1
 }
 
 app_running() { pgrep -x "$APP_PROCESS" > /dev/null; }
