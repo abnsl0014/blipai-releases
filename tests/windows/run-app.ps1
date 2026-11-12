@@ -202,7 +202,7 @@ W keys chord ctrl+win+space | Out-Null
 Start-Sleep -Milliseconds 800; Speak $phrases[3]
 W keys tap escape | Out-Null
 Start-Sleep -Seconds 10
-if ((Target-Text).Trim()) { Record FAIL 'Esc cancels a hands-free dictation' "typed: `"$(Target-Text)`"" }
+if ("$(Target-Text)".Trim()) { Record FAIL 'Esc cancels a hands-free dictation' "typed: `"$(Target-Text)`"" }
 else { Record PASS 'Esc cancels a hands-free dictation' 'nothing typed in 10 s' }
 Start-Sleep -Seconds 2
 
@@ -312,7 +312,7 @@ if (App-Has 'id="status-action"') {
   # The app logs "[mic] open-settings from=overlay" when the button is used.
   if ("$pressed" -match 'pressed "' -and ((Log-Has 'open-settings from=overlay') -or (Ui-Text 'open-settings') -match '(?i)test microphone')) { Record PASS '''Open Settings'' opens the microphone settings' "$pressed" }
   else { Record FAIL '''Open Settings'' opens the microphone settings' "press: $pressed; the app didn't log it; windows: $(App-Windows); overlay after: $((Ui-Text 'open-settings') -replace '\|Blip AI\|.*$', '')" }
-  if ((Target-Text).Trim()) { Record FAIL 'Silent dictation types nothing' "typed: `"$(Target-Text)`"" } else { Record PASS 'Silent dictation types nothing' '' }
+  if ("$(Target-Text)".Trim()) { Record FAIL 'Silent dictation types nothing' "typed: `"$(Target-Text)`"" } else { Record PASS 'Silent dictation types nothing' '' }
   W keys tap escape | Out-Null
 } else {
   Record SKIP 'Silent mic: ''No sound'' notice' 'this version has no microphone notices (added in 0.5.10)'
@@ -376,7 +376,7 @@ json.dump(cfg, open(p, 'w', encoding='utf-8'))" (App-Config)
   } else {
     Record FAIL "Session ended: 'You're signed out' notice" "windows: $(App-Windows); text: $(Ui-Text 'signed-out')"
   }
-  if ((Target-Text).Trim()) { Record FAIL 'Signed out: nothing is typed' "typed: $(Target-Text)" }
+  if ("$(Target-Text)".Trim()) { Record FAIL 'Signed out: nothing is typed' "typed: $(Target-Text)" }
 } else {
   Record SKIP "Session ended: 'You're signed out' notice" 'this version has no sign-in notice (added in 0.5.10)'
 }

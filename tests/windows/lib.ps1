@@ -134,12 +134,18 @@ function Config-Value([string]$Key) {
   $json = python -c "import json,sys; print(json.dumps(json.load(open(sys.argv[1], encoding='utf-8')).get(sys.argv[2])))" $c $Key 2>$null
   if ($json) { return ($json | ConvertFrom-Json) } else { return $null }
 }
-# Always a string: Get-Content -Raw gives $null for an empty file, and .Trim() on it throws.
-function Target-Text { if (Test-Path $TARGET_FILE) { [string](Get-Content -Raw -Path $TARGET_FILE -ErrorAction SilentlyContinue) } else { '' } }
+# Get-Content -Raw gives $null for an empty file, and the caller still saw $null with a
+# [string] cast (run 13), so callers wrap it: "$(Target-Text)" is always a string.
+function Target-Text {
+  $t = $null
+  if (Test-Path $TARGET_FILE) { $t = Get-Content -Raw -Path $TARGET_FILE -ErrorAction SilentlyContinue }
+  if ($null -eq $t) { return '' }
+  return [string]$t
+}
 function Wait-Text([int]$Seconds = 30) {
   $deadline = (Get-Date).AddSeconds($Seconds)
   while ((Get-Date) -lt $deadline) {
-    if ((Target-Text).Trim()) { Start-Sleep -Seconds 2; return (Target-Text) }
+    if ("$(Target-Text)".Trim()) { Start-Sleep -Seconds 2; return (Target-Text) }
     Start-Sleep -Milliseconds 250
   }
   return ''
