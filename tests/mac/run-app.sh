@@ -413,8 +413,9 @@ PY
     record PASS "Session ended: 'You're signed out' notice" "$(cut -c1-100 <<< "$notice")"
     pressed=$(press "Sign in")
     sleep 6
-    if grep -q '^pressed' <<< "$pressed" && { pgrep -x Safari > /dev/null || app_windows | grep -qi welcome; }; then
-      record PASS "'Sign in' starts signing in again" "opened $(pgrep -x Safari > /dev/null && echo 'the browser' || echo 'onboarding')"
+    # The app logs "[auth] sign-in started from=overlay" and opens its sign-in window.
+    if grep -q '^pressed' <<< "$pressed" && { grep -q 'sign-in started' "$(app_log)" 2>/dev/null || pgrep -x Safari > /dev/null || app_windows | grep -qiE 'welcome|sign'; }; then
+      record PASS "'Sign in' starts signing in again" "windows: $(app_windows)"
     else
       record FAIL "'Sign in' starts signing in again" "press: $(cut -c1-80 <<< "$pressed"); windows: $(app_windows)"
     fi

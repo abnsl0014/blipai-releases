@@ -108,15 +108,31 @@ function Speak([string]$Text) {
 }
 
 # The dictation target: a text box (wtool target) whose text is mirrored to a file.
+# Windows may refuse to bring a window to the front, and the app's own window can take
+# the front while it loads, so check the front window and try again until it's the box.
 function Focus-Target {
-  if (-not (Get-Process -Name wtool -ErrorAction SilentlyContinue | Where-Object { $_.MainWindowTitle -eq 'Blip Test Target' })) {
-    Start-Process -FilePath $WTOOL -ArgumentList 'target', "`"$TARGET_FILE`"" -WindowStyle Minimized | Out-Null
+  if (-not ((W windows wtool) -match 'Blip Test Target')) {
+    Start-Process -FilePath $WTOOL -ArgumentList 'target', "`"$TARGET_FILE`"" | Out-Null
     Wait-Until 15 { (W windows wtool) -match 'Blip Test Target' } | Out-Null
   }
   New-Item -ItemType File -Force -Path "$TARGET_FILE.clear" | Out-Null
   Start-Sleep -Milliseconds 600
-  W focus 'Blip Test Target' | Out-Null
-  Start-Sleep -Milliseconds 800
+  foreach ($try in 1..6) {
+    W focus 'Blip Test Target' | Out-Null
+    Start-Sleep -Milliseconds 500
+    if ((W fg) -eq 'Blip Test Target') { Start-Sleep -Milliseconds 300; return }
+    Start-Sleep -Milliseconds 700
+  }
+  Write-Host "front window is still: $(W fg)"
+}
+
+# The app's electron-store file, read with Python: PowerShell's JSON parser refuses
+# objects whose keys differ only in case.
+function Config-Value([string]$Key) {
+  $c = App-Config
+  if (-not $c) { return $null }
+  $json = python -c "import json,sys; print(json.dumps(json.load(open(sys.argv[1], encoding='utf-8')).get(sys.argv[2])))" $c $Key 2>$null
+  if ($json) { return ($json | ConvertFrom-Json) } else { return $null }
 }
 function Target-Text { if (Test-Path $TARGET_FILE) { (Get-Content -Raw -Path $TARGET_FILE -ErrorAction SilentlyContinue) } else { '' } }
 function Wait-Text([int]$Seconds = 30) {

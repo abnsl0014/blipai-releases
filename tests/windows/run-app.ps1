@@ -26,7 +26,7 @@ function Key-Server-Processes {
     Where-Object { $_.ExecutablePath -and $_.ExecutablePath -like "$env:INSTALL_DIR*" -and $_.Name -notlike 'Blip-AI*' })
 }
 function Key-Server-Running { [bool](Key-Server-Processes | Where-Object { $_.Name -match 'key' }) }
-function Signed-In { $c = App-Config; $c -and ((Get-Content -Raw $c | ConvertFrom-Json).authToken) }
+function Signed-In { [bool](Config-Value 'authToken') }
 function Ui-Dump([string]$Name) {
   $file = Join-Path $OUT "ui-$Name.txt"
   foreach ($try in 1..3) {
@@ -45,11 +45,10 @@ function Ptt([string]$Phrase) {   # hold Ctrl+Win, speak, release
   W keys up win | Out-Null; W keys up ctrl | Out-Null
 }
 function History {
-  $c = App-Config
-  if (-not $c) { return @() }
-  $h = (Get-Content -Raw $c | ConvertFrom-Json).transcriptionHistory
+  $h = Config-Value 'transcriptionHistory'
   if ($h) { return @($h) } else { return @() }
 }
+function Log-Has([string]$Pattern) { $l = App-Log; $l -and (Select-String -Path $l -Pattern $Pattern -Quiet) }
 function Collect-CrashReports {
   Get-ChildItem (Join-Path $env:APPDATA) -Recurse -Depth 4 -Filter '*.dmp' -ErrorAction SilentlyContinue |
     Where-Object { $_.FullName -match 'blip' -and $_.LastWriteTime -gt (Get-Item (Join-Path $OUT '.started')).LastWriteTime } |
@@ -72,6 +71,9 @@ Screenshot 'first-launch'
 if (App-Running) { Record PASS 'Stays up on first launch (15 s)' '' } else { Record FAIL 'Stays up on first launch (15 s)' 'the app exited'; Collect-CrashReports; exit 0 }
 $windows = App-Windows
 if ($windows) { Record PASS 'Shows onboarding on first launch' "windows: $windows" } else { Record FAIL 'Shows onboarding on first launch' 'no window' }
+$handler = (Get-ItemProperty 'HKCU:\Software\Classes\blipai\shell\open\command' -ErrorAction SilentlyContinue).'(default)'
+if ($handler -and $handler -like '*Blip-AI.exe*') { Record PASS 'blipai:// link opens the app (after first launch)' $handler }
+else { Record FAIL 'blipai:// link opens the app (after first launch)' "handler: $(if ($handler) { $handler } else { 'none' })" }
 Ui-Dump 'onboarding'
 Record INFO 'Onboarding text' ((Ui-Text 'onboarding').Substring(0, [math]::Min(300, (Ui-Text 'onboarding').Length)))
 
@@ -115,8 +117,8 @@ Start-Sleep -Seconds 15
 Screenshot 'relaunch-signed-in'
 if (App-Running) { Record PASS 'Relaunches signed in' "windows: $(App-Windows)" } else { Record FAIL 'Relaunches signed in' 'the app exited'; Collect-CrashReports; exit 0 }
 $helpers = { (Key-Server-Processes | ForEach-Object { $_.Name }) -join ', ' }
-if (Wait-Until 20 { Key-Server-Running }) { Record PASS 'Key listener running (WinKeyServer)' (& $helpers) }
-else { Record FAIL 'Key listener running (WinKeyServer)' "not started: the Ctrl+Win shortcut can't work. Helper processes: $(& $helpers)" }
+$keyProcs = (Get-Process | Where-Object { $_.Name -match 'key' } | ForEach-Object { $_.Name } | Sort-Object -Unique) -join ', '
+Record INFO 'Key listener processes' "$(if ($keyProcs) { $keyProcs } else { 'none found by name' }); the shortcut checks below show whether keys reach the app" 
 Ui-Dump 'home'
 
 # --- 4. Dictation ---------------------------------------------------------------------
@@ -183,8 +185,13 @@ if (App-Has 'id="status-action"') {
   W keys down ctrl | Out-Null; W keys down win | Out-Null
   Start-Sleep -Milliseconds 4500
   Ui-Dump 'no-sound'
+  $pattern = "(?i)no sound|can.t hear|couldn.t hear|is muted"
+  if (-not ((Get-Content (Join-Path $OUT 'ui-no-sound.txt')) -match $pattern)) {
+    Start-Sleep -Seconds 4      # the virtual cable's silence may not be digital zero: "Can't hear you" comes at 6 s
+    Ui-Dump 'no-sound'
+  }
   Screenshot 'no-sound'
-  $notice = (Get-Content (Join-Path $OUT 'ui-no-sound.txt')) -match "(?i)no sound|can.t hear|couldn.t hear|is muted" | Select-Object -First 1
+  $notice = (Get-Content (Join-Path $OUT 'ui-no-sound.txt')) -match $pattern | Select-Object -First 1
   if ($notice) { Record PASS 'Silent mic: ''No sound'' notice' $notice } else { Record FAIL 'Silent mic: ''No sound'' notice' "overlay showed: $(Ui-Text 'no-sound')" }
   $pressed = W uia-press $APP_PROCESS 'Open Settings'
   Start-Sleep -Seconds 3
@@ -244,7 +251,10 @@ if (App-Has 'data-missed-action') {
 # History.
 $all = (History | ForEach-Object { $_.text }) -join ' '
 if ($all -match '(?i)quick brown fox' -and $all -match '(?i)quarterly report') { Record PASS 'Dictations saved to history' "$(@(History).Count) entries, including the push-to-talk and hands-free ones" }
-else { Record FAIL 'Dictations saved to history' "$(@(History).Count) entries" }
+else {
+  $stores = python -c "import glob, json, os; [print(p, len(json.load(open(p, encoding='utf-8')).get('transcriptionHistory') or []), sorted(json.load(open(p, encoding='utf-8')).keys())[:12]) for p in glob.glob(os.path.join(os.environ['APPDATA'], '*', '**', 'config.json'), recursive=True) if 'blip' in p.lower()]" 2>&1
+  Record FAIL 'Dictations saved to history' "$(@(History).Count) entries read from $(App-Config). Stores: $($stores -join ' / ')"
+}
 $log = App-Log
 if ($log) { Select-String -Path $log -Pattern '\[(stt|paste)-timing\]' | ForEach-Object { $_.Line } | Set-Content (Join-Path $OUT 'dictation-timing.txt') }
 
@@ -255,18 +265,16 @@ if ($log) { Select-String -Path $log -Pattern '\[(stt|paste)-timing\]' | ForEach
 try { Invoke-RestMethod -Method Post -Uri "$SUPABASE_URL/auth/v1/logout?scope=local" -TimeoutSec 30 -Headers @{ apikey = $SUPABASE_KEY; Authorization = "Bearer $access" } | Out-Null } catch { }
 $hasSignInNotice = App-Has 'id="status-action"'
 if ($hasSignInNotice) {
-  $cfgPath = App-Config
-  $cfg = Get-Content -Raw $cfgPath | ConvertFrom-Json
-  $b64 = { param($o) [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes(($o | ConvertTo-Json -Compress))).TrimEnd('=').Replace('+', '-').Replace('/', '_') }
-  $expired = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds() - 3600
-  $payload = @{ sub = 'expired'; exp = $expired }
-  try {
-    $p = $cfg.authToken.Split('.')[1].Replace('-', '+').Replace('_', '/'); $p += '=' * ((4 - $p.Length % 4) % 4)
-    $payload = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($p)) | ConvertFrom-Json
-    $payload.exp = $expired
-  } catch { }
-  $cfg.authToken = (& $b64 @{ alg = 'HS256'; typ = 'JWT' }) + '.' + (& $b64 $payload) + '.expired'
-  $cfg | ConvertTo-Json -Depth 20 | Set-Content -Path $cfgPath -Encoding utf8
+  python -c "import base64, json, sys, time
+p = sys.argv[1]; cfg = json.load(open(p, encoding='utf-8'))
+b64 = lambda d: base64.urlsafe_b64encode(json.dumps(d).encode()).rstrip(b'=').decode()
+try:
+    part = (cfg.get('authToken') or '').split('.')[1]; payload = json.loads(base64.urlsafe_b64decode(part + '=' * (-len(part) % 4)))
+except Exception:
+    payload = {}
+payload['exp'] = int(time.time()) - 3600
+cfg['authToken'] = b64({'alg': 'HS256', 'typ': 'JWT'}) + '.' + b64(payload) + '.expired'
+json.dump(cfg, open(p, 'w', encoding='utf-8'))" (App-Config)
   Focus-Target
   W keys down ctrl | Out-Null; W keys down win | Out-Null
   Start-Sleep -Milliseconds 2500
@@ -277,12 +285,10 @@ if ($hasSignInNotice) {
   $notice = @(Get-Content (Join-Path $OUT 'ui-signed-out.txt'), (Join-Path $OUT 'ui-signed-out-after.txt') -ErrorAction SilentlyContinue) -match '(?i)signed out|sign in to keep' | Select-Object -First 1
   if ($notice) {
     Record PASS "Session ended: 'You're signed out' notice" $notice
-    $browsersBefore = @(Get-Process msedge, chrome, firefox -ErrorAction SilentlyContinue).Count
     $pressed = W uia-press $APP_PROCESS 'Sign in'
     Start-Sleep -Seconds 6
-    $browser = @(Get-Process msedge, chrome, firefox -ErrorAction SilentlyContinue).Count -gt $browsersBefore
-    $opened = if ($browser) { 'the browser' } else { 'onboarding' }
-    if ("$pressed" -like 'pressed*' -and ($browser -or (App-Windows) -match '(?i)welcome')) { Record PASS "'Sign in' starts signing in again" "opened $opened" }
+    # The app logs "[auth] sign-in started from=overlay" and opens its sign-in window.
+    if ("$pressed" -like 'pressed*' -and ((Log-Has 'sign-in started') -or (App-Windows) -match '(?i)welcome|sign')) { Record PASS "'Sign in' starts signing in again" "windows: $(App-Windows)" }
     else { Record FAIL "'Sign in' starts signing in again" "press: $pressed; windows: $(App-Windows)" }
   } else {
     Record FAIL "Session ended: 'You're signed out' notice" "windows: $(App-Windows); text: $(Ui-Text 'signed-out')"

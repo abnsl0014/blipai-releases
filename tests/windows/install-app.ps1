@@ -76,8 +76,8 @@ $desktop = Get-ChildItem ([Environment]::GetFolderPath('Desktop')) -Filter 'Blip
 if ($desktop) { Record PASS 'Desktop shortcut' $desktop.Name } else { Record WARN 'Desktop shortcut' 'none' }
 
 $handler = (Get-ItemProperty 'HKCU:\Software\Classes\blipai\shell\open\command' -ErrorAction SilentlyContinue).'(default)'
-if ($handler -and $handler -like "*$(Split-Path -Leaf $exe)*") { Record PASS 'blipai:// link opens the app' $handler }
-else { Record FAIL 'blipai:// link opens the app' "handler: $(if ($handler) { $handler } else { 'none (sign-in from the browser can''t reach the app)' })" }
+# The app registers blipai:// when it first runs; run-app.ps1 checks it then.
+Record INFO 'blipai:// handler right after install' "$(if ($handler) { $handler } else { 'not yet (the app registers it on first launch)' })" 
 
 $keyServer = Get-ChildItem -Path $dir -Filter 'WinKeyServer.exe' -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
 if ($keyServer) { Record PASS 'Key listener helper (WinKeyServer.exe)' "$([math]::Round($keyServer.Length / 1KB)) KB" }

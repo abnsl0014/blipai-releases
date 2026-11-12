@@ -7,6 +7,7 @@
 //   wtool target FILE               a window with a text box; its text is mirrored to FILE.
 //                                   FILE.clear (created by the test) empties it.
 //   wtool focus TITLE               bring the window with that title to the front
+//   wtool fg                        title of the window in front
 //   wtool windows PROCESS           visible top-level window titles of a process
 //   wtool uia-text PROCESS          the text of every element in the process's windows
 //   wtool uia-press PROCESS LABEL   invoke the first button whose name contains LABEL
@@ -239,6 +240,10 @@ static class WTool
             else if (cmd == "watch" && a.Length == 2) Watch(double.Parse(a[1]));
             else if (cmd == "target" && a.Length == 2) Target(a[1]);
             else if (cmd == "focus" && a.Length == 2) Focus(a[1]);
+            else if (cmd == "fg" && a.Length == 1) {
+                var sb = new StringBuilder(512); GetWindowText(GetForegroundWindow(), sb, 512);
+                Console.WriteLine(sb.ToString());
+            }
             else if (cmd == "windows" && a.Length == 2) { foreach (var w in TopWindows(Pids(a[1]))) Console.WriteLine(w.Value); }
             else if (cmd == "uia-text" && a.Length == 2) UiaText(a[1]);
             else if (cmd == "uia-press" && a.Length == 3) UiaPress(a[1], a[2]);
