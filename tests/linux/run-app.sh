@@ -374,6 +374,7 @@ PY
       # Under Sway, xdotool's keys don't reach XWayland windows; focus it with Sway and
       # type with wtype (one run, so its virtual keyboard stays; the pause lets it settle).
       # Whose dialog is it: the app's own GTK one (XWayland) or a desktop portal's?
+      primer=()
       owner=$(swaymsg -t get_tree | python3 -c '
 import json, sys
 def walk(n):
@@ -403,12 +404,16 @@ walk(json.load(sys.stdin))' 2> /dev/null | head -n 1)"
         # Type the path with wtype (one run, so its virtual keyboard stays; the pause lets it
         # settle), then Return. (The test's /dev/input keyboard doesn't reach windows: headless
         # Sway reads no input devices; and with no pointer, a click on Save doesn't arrive.)
-        wtype -s 400 -M ctrl -k a -m ctrl -s 200 -d 20 "$saved_to"; sleep 0.8
+        # An XWayland dialog gets the app's own Hyper_L primer first (blip-ai-linux #25): with
+        # libxkbcommon 1.12+ (Arch) Xwayland otherwise rejects wtype's keymap and the path
+        # arrives as other keys.
+        case "$owner" in xwayland*) primer=(-P Hyper_L -p Hyper_L) ;; esac
+        wtype "${primer[@]}" -s 400 -M ctrl -k a -m ctrl -s 200 -d 20 "$saved_to"; sleep 0.8
         mkdir -p "$OUT/screens"
         # The dialog as typed, cropped to it (a test user's folders and the typed path).
         [ -n "${dw:-}" ] && with_timeout 10 grim -g "$dx,$dy ${dw}x$dh" "$OUT/screens/save-audio-dialog-typed.png" 2> /dev/null
-        wtype -k Return
-        dialog="focused the Save audio dialog ($owner) with Sway, typed the path and Return with wtype"
+        wtype "${primer[@]}" -k Return
+        dialog="focused the Save audio dialog ($owner) with Sway, typed the path and Return with wtype${primer:+ (Hyper_L primer)}"
       fi
       # The app's answer is a 3-second toast: "Audio saved." or "Could not save the audio."
       # (nothing when cancelled). Its log can't say: release builds silence console.warn.
@@ -429,7 +434,7 @@ walk(json.load(sys.stdin))' 2> /dev/null | head -n 1)"
     if [ "$SESSION" = wayland ] && [ ! -s "$saved_to" ] && swaymsg -t get_tree | grep -q '"Save audio"'; then
       # Still open with nothing saved: press Return once more.
       swaymsg '[title="^Save audio$"] focus' > /dev/null 2>&1; sleep 0.5
-      wtype -k Return
+      wtype "${primer[@]}" -k Return
       dialog="$dialog; still open, so pressed Return again"
       sleep 3
     fi
