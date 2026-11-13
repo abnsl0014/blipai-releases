@@ -128,6 +128,7 @@ jobs:
       - name: Cold starts, randomised A/B
         shell: bash
         run: |
+          set +e   # GitHub's bash runs with -e; a kill of an already-exited instance must not end the loop
           SUDO=$(command -v sudo || true)
           # No core at all in this job so a crash exits at once (the core is written after the race; linger is tested in 'coredump').
           $SUDO sysctl -q kernel.core_pattern=core || true
@@ -175,6 +176,7 @@ jobs:
           chmod +x "$RUNNER_TEMP/app/$ASSET"
       - name: Crash the browser process with and without ulimit -c 0
         run: |
+          set +e
           (Xvfb :99 -screen 0 1280x800x24 -nolisten tcp > /dev/null 2>&1 &); export DISPLAY=:99; sleep 1
           eval "$(dbus-launch --sh-syntax)"
           case "$(cat /proc/sys/kernel/core_pattern)" in *systemd-coredump*) ;; *) echo "::error::core_pattern is not systemd-coredump"; exit 1;; esac
