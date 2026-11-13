@@ -108,7 +108,8 @@ if [ -n "${DESKTOP:-}" ]; then
     wait_until 30 bash -c "[ \"\$(ls /tmp/.X11-unix 2>/dev/null | xargs)\" != '$xs_before' ]"
     xs=$(comm -13 <(tr ' ' '\n' <<< "$xs_before" | sort) <(ls /tmp/.X11-unix | sort) | head -n 1)
     env_out DISPLAY ":${xs#X}"
-    env_out XAUTHORITY "$(newest "$XDG_RUNTIME_DIR"/xauth_* "$XDG_RUNTIME_DIR"/.Xauthority* )"
+    # KWin starts Xwayland on the first X11 client; it takes clients without an auth file.
+    xa=$(newest "$XDG_RUNTIME_DIR"/xauth_* "$XDG_RUNTIME_DIR"/.Xauthority*); [ -n "$xa" ] && env_out XAUTHORITY "$xa"
     if pgrep -x kwin_wayland > /dev/null && [ -n "$xs" ]; then
       record INFO "Session" "KDE Plasma's KWin $(kwin_wayland --version 2>/dev/null | awk '{print $2}') (virtual, Wayland, 1280x800) with Xwayland on $DISPLAY"
     else
@@ -117,7 +118,7 @@ if [ -n "${DESKTOP:-}" ]; then
   fi
   # The portals start on demand, with this session's environment.
   dbus-update-activation-environment XDG_CURRENT_DESKTOP XDG_SESSION_DESKTOP XDG_SESSION_TYPE DESKTOP_SESSION \
-    WAYLAND_DISPLAY DISPLAY XAUTHORITY XDG_RUNTIME_DIR ${KDE_FULL_SESSION:+KDE_FULL_SESSION KDE_SESSION_VERSION QT_LINUX_ACCESSIBILITY_ALWAYS_ON} > /dev/null 2>&1
+    WAYLAND_DISPLAY DISPLAY ${XAUTHORITY:+XAUTHORITY} XDG_RUNTIME_DIR ${KDE_FULL_SESSION:+KDE_FULL_SESSION KDE_SESSION_VERSION QT_LINUX_ACCESSIBILITY_ALWAYS_ON} > /dev/null 2>&1
   # What the app says over D-Bus that the test can't see in its silent release log: the
   # RemoteDesktop portal calls (the paste path) and its notifications (the clipboard fallback).
   setsid dbus-monitor --session "interface='org.freedesktop.portal.RemoteDesktop'" \
