@@ -11,6 +11,14 @@ it, on every distro the website's Linux guide names and both session types:
 | Debian 12 | `debian:bookworm` container on an Ubuntu runner | X11, Wayland |
 | Fedora 42 | `fedora:42` container on an Ubuntu runner | X11, Wayland |
 | Arch | `archlinux:latest` container on an Ubuntu runner | X11, Wayland |
+| Ubuntu 24.04 | GitHub's Ubuntu 24.04 runner | GNOME (Wayland) |
+| Fedora 42 | `fedora:42` container on an Ubuntu runner | GNOME (Wayland), KDE Plasma (Wayland) |
+
+X11 runs Openbox and Wayland runs Sway (the wlroots path, where the app types with `wtype`).
+GNOME and KDE Plasma, the default desktops of Ubuntu, Debian, Fedora Workstation, Fedora KDE and
+Kubuntu, have jobs of their own (`gnome` and `kde` in the matrix's `desktop`): there the app
+pastes through the desktop's RemoteDesktop portal after asking for it in onboarding (see
+[GNOME and KDE](#gnome-and-kde)).
 
 The containers run privileged with the runner's `/dev`, so FUSE, `/dev/uinput` and the input
 devices the app reads on Wayland work as on a normal install. They share the runner's kernel.
@@ -54,6 +62,31 @@ uploaded logs.
 6. **Quit** (SIGTERM, as at logout): the app, its key listener and its AppImage mount go away,
    and relaunching with the ended session asks to sign in.
 
+## GNOME and KDE
+
+These jobs run the desktop itself, headless, and walk the onboarding a new user sees:
+
+| Step | Script | Checks |
+|---|---|---|
+| Desktop | `setup-runner.sh`, `session.sh` | GNOME: `gnome-shell --headless --virtual-monitor 1280x800` (mutter, Xwayland for the app), `xdg-desktop-portal` and `xdg-desktop-portal-gnome`. KDE: `kwin_wayland --virtual --xwayland`, `xdg-desktop-portal-kde`, and what a Plasma install gives KWin: PipeWire (without it KWin doesn't offer the portal its screencast protocol and the portal refuses any RemoteDesktop session), `plasma-integration` and KDE's service cache (`kbuildsycoca6`, which KWin reads to let the portal use its privileged protocols). `XDG_CURRENT_DESKTOP` is what the login sets (`ubuntu:GNOME`, `GNOME`, `KDE`). The containers also get a system bus. |
+| Website steps | `setup-runner.sh`, `user-steps.sh` | As on the other Wayland jobs: the guide's tools command (`wl-clipboard wtype`) and the `input` group. `/dev/uinput` stays root's, as on a stock install (`uinput-as-installed.sh`): the test's own keyboard runs as root there. |
+| Onboarding | `onboarding.sh` | After sign-in: privacy, the Linux setup screen, the microphone test, the hotkey, "try it", action mode, Get Started. On setup, "Allow Blip to paste": the app asks the RemoteDesktop portal and the desktop shows its own dialog, which the test answers over AT-SPI the way a person does (GNOME: switch on "Allow Remote Interaction", then Share; KDE: Approve). Then the app must have the grant (its restore token). It checks the onboarding's instructions against the dialog's buttons, and, through all the dictation that follows (after a relaunch), that the desktop doesn't ask again. |
+| Dictation | `run-app.sh` | The same checks as the other jobs. Each dictation's result says which way the text went: `paste-path.py` reads the paste tools the app ran (shims log `wtype`, `ydotool` and `wl-copy` with exit codes, since the release build logs nothing), the portal calls it made (`dbus-monitor`: `NotifyKeyboardKeycode` is the portal paste, a `Notify` is the clipboard fallback's "Paste with Ctrl+Shift+V" notice), and what the clipboard held when the box got the paste chord. |
+
+A step the test itself couldn't do is reported as 🛠️ **HARNESS**, not as a failure of the app,
+and still fails the job.
+
+What stands in for a person there:
+
+- **Keyboard and mouse at the desktop.** Headless GNOME Shell reads no input devices and starts in
+  the overview, so `gnome-shell-extension/` (test only) gives its seat a keyboard: each of the
+  test's key presses reaches GNOME as well as the app's `/dev/input` reader, as a real keyboard's
+  do (`keys.py gnome`). It also closes the overview, focuses a window by title (a click), and
+  takes screenshots. On KDE a KWin script (D-Bus scripting) focuses windows; KWin's virtual
+  backend has a seat keyboard of its own.
+- **Dialogs.** The portal's consent dialog and file chooser are the desktop's own windows (GTK 4,
+  Qt), pressed over AT-SPI. Nothing about the portal is skipped or pre-granted.
+
 ## How it stands in for a person
 
 - **Microphone.** PulseAudio has a "voice" sink whose monitor is the default input; the test
@@ -70,9 +103,10 @@ uploaded logs.
 
 ## Limits
 
-- No GNOME or KDE session yet: their Wayland path (paste through the RemoteDesktop portal, after
-  the desktop's one-time "allow" dialog) isn't covered; Sway covers the wlroots path (`wtype`).
-  X11 runs with Openbox.
+- GNOME and KDE run headless: no GPU, one virtual monitor, and on GNOME the default session
+  mode, not Ubuntu's (no Ubuntu Dock). KDE Plasma is KWin with its portal, not the whole Plasma
+  shell, and its screenshots show only the Xwayland windows (the app's); KWin doesn't see the
+  test's key presses (the app does). X11 runs with Openbox.
 - Containers share the Ubuntu runner's kernel, so kernel-level differences between distros aren't
   covered; the distro's own libraries, FUSE, packages and desktop tools are.
 - No sleep and wake, real microphones or Bluetooth; one synthetic voice.

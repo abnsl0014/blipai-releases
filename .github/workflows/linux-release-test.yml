@@ -6,6 +6,7 @@
 #
 # Ubuntu 24.04 and 22.04 run on GitHub's own Ubuntu runners; Debian 13 and 12, Fedora 42
 # and Arch run in containers on an Ubuntu runner, with its /dev (FUSE, input devices).
+# X11 runs Openbox and Wayland runs Sway; GNOME and KDE Plasma (Wayland) have jobs of their own.
 #
 # Runs when a release is published, by hand (Run workflow, optional tag; drafts work),
 # and when the test itself changes (a "Test-tag: v0.5.10" line in the commit message
@@ -83,12 +84,19 @@ jobs:
           - { name: fedora-42-wayland,    runner: ubuntu-24.04, image: "fedora:42",       session: wayland }
           - { name: arch-x11,             runner: ubuntu-24.04, image: "archlinux:latest", session: x11 }
           - { name: arch-wayland,         runner: ubuntu-24.04, image: "archlinux:latest", session: wayland }
+          # The default desktops: GNOME Shell (Ubuntu, Debian, Fedora Workstation) and KDE Plasma
+          # (Fedora KDE, Kubuntu), each on Wayland, headless. Text goes in through the desktop's
+          # RemoteDesktop portal, after the onboarding's paste permission (tests/linux/README.md).
+          - { name: ubuntu-24.04-gnome,   runner: ubuntu-24.04, image: "",                session: wayland, desktop: gnome }
+          - { name: fedora-42-gnome,      runner: ubuntu-24.04, image: "fedora:42",       session: wayland, desktop: gnome }
+          - { name: fedora-42-kde,        runner: ubuntu-24.04, image: "fedora:42",       session: wayland, desktop: kde }
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 75   # up to 30 of them waiting for a tag that's still building (select-release.sh)
     env:
       GH_TOKEN: ${{ github.token }}
       SESSION: ${{ matrix.session }}
       IMAGE: ${{ matrix.image }}
+      DESKTOP: ${{ matrix.desktop || '' }}   # gnome or kde; empty: Openbox (X11) or Sway (Wayland)
       # OUT ($RUNNER_TEMP/blip-test) and SPEECH_DIR ($RUNNER_TEMP/speech) default in lib.sh:
       # the runner context isn't available at the job level.
     steps:

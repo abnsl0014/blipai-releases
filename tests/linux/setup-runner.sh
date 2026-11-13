@@ -7,6 +7,7 @@
 # Then the website's Wayland setup: its install command (wl-clipboard and wtype), as
 # printed there, and the `input` group for the user who runs the app.
 #   TEST_USER: the user who runs the app (default: the user who ran sudo)
+#   DESKTOP:   gnome or kde for those jobs: also installs that desktop (headless) and its portal
 set -uo pipefail
 . /etc/os-release
 TEST_USER="${TEST_USER:-${SUDO_USER:-$(id -un)}}"
@@ -44,6 +45,31 @@ case "${ID}:${ID_LIKE:-}" in
   *) echo "unsupported distro: $ID" >&2; exit 1 ;;
 esac
 status=$?
+
+# GNOME and KDE jobs: the desktop itself, run headless by session.sh. GNOME: GNOME Shell (it
+# brings mutter) and the GNOME portal backend. KDE: KWin, the KDE portal backend, and what a
+# Plasma install has that they need: plasma-integration (KWin crashed at start in a full
+# session without it), PipeWire (KWin offers the portal its screencast protocol only with it,
+# and the portal refuses a RemoteDesktop session without that), the XDG applications menu
+# and KDE's service cache (KWin finds which programs may use its privileged protocols there).
+if [ "$status" -eq 0 ] && [ -n "${DESKTOP:-}" ]; then
+  case "${DESKTOP}:${ID}:${ID_LIKE:-}" in
+    gnome:ubuntu:*|gnome:debian:*|gnome:*:*debian*)
+      apt-get install -y -qq --no-install-recommends gnome-shell xdg-desktop-portal xdg-desktop-portal-gnome \
+        dconf-cli xwayland >> "$log" 2>&1 ;;
+    gnome:fedora:*)
+      dnf install -y --setopt=install_weak_deps=False gnome-shell xdg-desktop-portal xdg-desktop-portal-gnome \
+        xorg-x11-server-Xwayland mesa-dri-drivers dconf >> "$log" 2>&1 ;;
+    kde:fedora:*)
+      dnf install -y --setopt=install_weak_deps=False kwin xdg-desktop-portal xdg-desktop-portal-kde \
+        plasma-integration breeze-icon-theme kf6-kservice redhat-menus pipewire wireplumber \
+        xorg-x11-server-Xwayland mesa-dri-drivers >> "$log" 2>&1 ;;
+    *) echo "no $DESKTOP setup for $ID" >> "$log"; false ;;
+  esac
+  status=$?
+  # Mutter and KWin start Xwayland on a socket here; a container has no such folder.
+  mkdir -p /tmp/.X11-unix && chmod 1777 /tmp/.X11-unix
+fi
 tail -n 5 "$log"
 [ "$status" -eq 0 ] || { echo "::error title=Install the test's packages::exit $status (see $log)"; exit 1; }
 

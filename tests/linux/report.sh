@@ -12,7 +12,7 @@ redact() {
     -e 's/(Bearer )[A-Za-z0-9._~+\/-]+/\1<redacted>/g' \
     -e 's/[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/<email>/g'
 }
-for f in "$OUT"/*.log "$OUT"/*.txt "$OUT"/*.tsv "$OUT"/*.events; do
+for f in "$OUT"/*.log "$OUT"/*.txt "$OUT"/*.tsv "$OUT"/*.events "$OUT"/*.json; do
   [ -f "$f" ] && { redact < "$f" > "$f.tmp" && mv "$f.tmp" "$f"; }
 done
 
@@ -20,21 +20,23 @@ pass=$(grep -c '^PASS' "$RESULTS" || true)
 fail=$(grep -c '^FAIL' "$RESULTS" || true)
 warn=$(grep -c '^WARN' "$RESULTS" || true)
 skip=$(grep -c '^SKIP' "$RESULTS" || true)
+harness=$(grep -c '^HARNESS' "$RESULTS" || true)
 where=$(cat "$OUT/distro.txt" 2>/dev/null || distro)
 {
-  echo "## Blip ${TAG:-?} on $where, ${SESSION}"
+  echo "## Blip ${TAG:-?} on $where, ${SESSION}${DESKTOP:+ ($DESKTOP)}"
   echo
   echo "**$pass passed, $fail failed, $warn warnings, $skip skipped.** Screenshots and redacted logs are in the run's artifact."
+  [ "$harness" -gt 0 ] && echo && echo "**🛠️ $harness test-harness problems:** the test couldn't do these steps, so they say nothing about the app."
   echo
   echo "| | Check | Detail |"
   echo "|---|---|---|"
   while IFS=$'\t' read -r status name detail _at; do
     case "$status" in
-      PASS) icon="✅" ;; FAIL) icon="❌" ;; WARN|SKIP) icon="⚠️" ;; *) icon="ℹ️" ;;
+      PASS) icon="✅" ;; FAIL) icon="❌" ;; WARN|SKIP) icon="⚠️" ;; HARNESS) icon="🛠️" ;; *) icon="ℹ️" ;;
     esac
     echo "| $icon | $name | ${detail//|/\\|} |"
   done < "$RESULTS"
 } | redact >> "$GITHUB_STEP_SUMMARY"
 
-echo "$pass passed, $fail failed, $warn warnings, $skip skipped"
-[ "$fail" -eq 0 ]
+echo "$pass passed, $fail failed, $warn warnings, $skip skipped${DESKTOP:+, $harness harness problems}"
+[ "$fail" -eq 0 ] && [ "$harness" -eq 0 ]

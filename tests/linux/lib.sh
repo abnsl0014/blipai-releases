@@ -1,12 +1,15 @@
 # Shared helpers for the Linux release test. Sourced by the other scripts.
 # Every check appends one line to $RESULTS:  STATUS<TAB>check<TAB>detail
-# STATUS is PASS, FAIL, WARN (a real finding that doesn't break users), SKIP or INFO.
-# report.sh turns the file into the job summary and fails the job if any line is FAIL.
+# STATUS is PASS, FAIL, WARN (a real finding that doesn't break users), SKIP or INFO, or
+# HARNESS: the test itself couldn't do a step (GNOME and KDE jobs), so nothing about the app
+# can be said from it. report.sh turns the file into the job summary and fails the job if any
+# line is FAIL or HARNESS.
 
 : "${RUNNER_TEMP:=/tmp}"
 : "${OUT:=$RUNNER_TEMP/blip-test}"           # everything uploaded as the run's artifact
 : "${RESULTS:=$OUT/results.tsv}"
 : "${SESSION:=x11}"                          # x11 or wayland
+: "${DESKTOP:=}"                             # gnome or kde (Wayland); empty: Openbox or Sway
 : "${SESSION_ENV:=$RUNNER_TEMP/session.env}" # written by session.sh
 : "${APP_DIR:=$HOME/.local/bin}"             # where the website's install steps put it
 : "${APPIMAGE_PATH:=$APP_DIR/BlipAI.AppImage}"
@@ -26,6 +29,7 @@ record() {  # record STATUS "check" "detail"
   printf '%s\t%s\t%s\t%s\n' "$status" "$check" "$detail" "$(date -u +%T)" >> "$RESULTS"   # the time lines it up with the logs
   case "$status" in
     FAIL) echo "::error title=$check::$detail" ;;
+    HARNESS) echo "::error title=Test harness: $check::$detail" ;;
     WARN|SKIP) echo "::warning title=$check::$detail" ;;
     *) echo "$status  $check  $detail" ;;
   esac
@@ -60,7 +64,10 @@ screenshot() {  # screenshot NAME → $OUT/screens/NN-NAME.png (private once sig
   fi
   n=$( (find "$OUT/screens" "$RUNNER_TEMP/private-screens" -name '*.png' 2>/dev/null) | wc -l | tr -d ' ')
   local f="$dir/$(printf '%02d' $((n + 1)))-$1.png"
-  if [ "$SESSION" = wayland ]; then with_timeout 10 grim "$f" 2>/dev/null
+  if [ "$DESKTOP" = gnome ]; then with_timeout 10 gdbus call --session -d org.gnome.Shell -o /app/blipai/TestShell \
+    -m app.blipai.TestShell.Screenshot "$f" > /dev/null 2>&1
+  elif [ "$DESKTOP" = kde ]; then with_timeout 10 import -window root "$f" 2>/dev/null   # Xwayland's windows only (the app's)
+  elif [ "$SESSION" = wayland ]; then with_timeout 10 grim "$f" 2>/dev/null
   else with_timeout 10 import -window root "$f" 2>/dev/null; fi
   true
 }
@@ -136,9 +143,28 @@ EOF
   chmod +x "$dir/wtype"
   echo "$dir"
 }
+paste_tool_shims() {  # GNOME and KDE: like wtype_shim, for every tool the app's Wayland
+  # paste runs (wtype, then ydotool, then wl-copy for the portal paste or the clipboard
+  # fallback): each call and its exit code go to paste-tools.log. Prints the folder.
+  local dir="$RUNNER_TEMP/shim" real t
+  mkdir -p "$dir"
+  for t in wtype ydotool wl-copy; do
+    real=$(PATH="${PATH//$dir:/}" command -v "$t") || continue
+    [ "$real" = "$dir/$t" ] && continue
+    cat > "$dir/$t" << EOF
+#!/bin/sh
+"$real" "\$@"; rc=\$?
+echo "\$(date +%s%3N) \$(date +%T.%3N) $t \$* -> exit \$rc" >> "$OUT/paste-tools.log"
+exit \$rc
+EOF
+    chmod +x "$dir/$t"
+  done
+  echo "$dir"
+}
 launch_app() {  # launch_app [ARGS...]
   local cmd=("$APPIMAGE_PATH" --force-renderer-accessibility ${APP_EXTRA_ARGS:-} "$@") shim
-  if [ "$SESSION" = wayland ]; then shim=$(wtype_shim); [ -n "$shim" ] && cmd=(env "PATH=$shim:$PATH" "${cmd[@]}"); fi
+  if [ -n "$DESKTOP" ]; then shim=$(paste_tool_shims); cmd=(env "PATH=$shim:$PATH" "${cmd[@]}")
+  elif [ "$SESSION" = wayland ]; then shim=$(wtype_shim); [ -n "$shim" ] && cmd=(env "PATH=$shim:$PATH" "${cmd[@]}"); fi
   if [ "$SESSION" = wayland ] && ! id -nG | grep -qw input; then
     setsid sg input -c "$(printf '%q ' "${cmd[@]}")" >> "$OUT/app-stdout.log" 2>> "$OUT/app-stderr.log" < /dev/null &
   else
@@ -180,10 +206,26 @@ ui_dump() {  # ui_dump NAME [WINDOW] → $OUT/ui-NAME.txt
 press() { with_timeout 40 "$PY" "$here_lib/atspi.py" press "$APP_PROCESS" "$@" 2>&1; }
 
 # --- the text box -------------------------------------------------------------------
+focus_window() {  # GNOME and KDE: focus_window TITLE, as a click on that window would
+  if [ "$DESKTOP" = gnome ]; then
+    gdbus call --session -d org.gnome.Shell -o /app/blipai/TestShell -m app.blipai.TestShell.Focus "$1" 2> /dev/null | grep -q true
+  else  # a KWin script, through KWin's D-Bus scripting interface
+    local js="$RUNNER_TEMP/kwin-focus.js" id
+    printf 'for (const w of workspace.windowList()) if (w.caption === %s) workspace.activeWindow = w;\n' \
+      "$(python3 -c 'import json, sys; print(json.dumps(sys.argv[1]))' "$1")" > "$js"
+    gdbus call --session -d org.kde.KWin -o /Scripting -m org.kde.kwin.Scripting.unloadScript blipfocus > /dev/null 2>&1
+    id=$(gdbus call --session -d org.kde.KWin -o /Scripting -m org.kde.kwin.Scripting.loadScript "$js" blipfocus 2> /dev/null | grep -oE '[0-9]+' | head -n 1)
+    [ -n "$id" ] && gdbus call --session -d org.kde.KWin -o "/Scripting/Script$id" -m org.kde.kwin.Script.run > /dev/null 2>&1
+    gdbus call --session -d org.kde.KWin -o /Scripting -m org.kde.kwin.Scripting.unloadScript blipfocus > /dev/null 2>&1
+    [ -n "$id" ]
+  fi
+}
 focus_target() {
   touch "$TARGET_FILE.clear"
   sleep 0.6
-  if [ "$SESSION" = wayland ]; then swaymsg '[title="Blip Test Target"] focus' > /dev/null 2>&1
+  DICTATION_FROM=$(date +%s%3N)   # paste_path looks at what the app did from here on
+  if [ -n "$DESKTOP" ]; then focus_window "Blip Test Target"
+  elif [ "$SESSION" = wayland ]; then swaymsg '[title="Blip Test Target"] focus' > /dev/null 2>&1
   else xdotool search --name 'Blip Test Target' windowactivate --sync > /dev/null 2>&1 || true; fi
   sleep 0.5
 }
@@ -205,17 +247,26 @@ have, want = set(norm(sys.argv[1])), norm(sys.argv[2])
 print(round(100 * sum(w in have for w in want) / len(want)) if want else 0)
 PY
 }
+paste_path() {  # GNOME and KDE: how the app tried to type since focus_target, from the
+  # paste tools it ran (paste-tools.log) and its portal calls and notices (portal-dbus.log)
+  "$PY" "$here_lib/paste-path.py" "${DICTATION_FROM:-0}" "$OUT/paste-tools.log" "$OUT/portal-dbus.log" "$TARGET_FILE.events" 2> /dev/null
+}
 judge() {  # judge CHECK EXPECTED ACTUAL [MIN_RECALL%]
-  local name="$1" expected="$2" actual="$3" min="${4:-70}" recall shown
+  local how=""
+  [ -n "$DESKTOP" ] && how=$(paste_path)   # say which way the text went (or didn't)
+  judge_plain "$1" "$2" "$3" "${4:-70}" "${how:+; typing path: $how}"
+}
+judge_plain() {
+  local name="$1" expected="$2" actual="$3" min="$4" extra="$5" recall shown
   if [ -z "$(printf '%s' "$actual" | tr -d '[:space:]')" ]; then
     local got wt=""; got=$(tail -n 6 "$TARGET_FILE.events" 2>/dev/null | cut -c14- | paste -sd, - | cut -c1-200)
     # On Wayland, say whether the app typed at all, and whether its overlay was up then.
     [ "$SESSION" = wayland ] && [ -s "$OUT/wtype-calls.log" ] && wt="; last wtype call: $(tail -n 1 "$OUT/wtype-calls.log")"
-    record FAIL "$name" "nothing was typed into the text box within 30 s; the box got: ${got:-nothing}$wt"
+    record FAIL "$name" "nothing was typed into the text box within 30 s; the box got: ${got:-nothing}$wt$extra"
     return 1
   fi
   recall=$(word_recall "$actual" "$expected")
   shown=$(printf '%s' "$actual" | tr '\n' ' ' | cut -c1-140)
-  if [ "$recall" -ge "$min" ]; then record PASS "$name" "$recall% of the spoken words; typed: \"$shown\""
-  else record FAIL "$name" "$recall% of the spoken words (need $min%); typed: \"$shown\""; return 1; fi
+  if [ "$recall" -ge "$min" ]; then record PASS "$name" "$recall% of the spoken words; typed: \"$shown\"$extra"
+  else record FAIL "$name" "$recall% of the spoken words (need $min%); typed: \"$shown\"$extra"; return 1; fi
 }

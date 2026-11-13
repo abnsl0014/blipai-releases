@@ -14,6 +14,7 @@
 set -uo pipefail
 here="$(cd "$(dirname "$0")" && pwd)"
 source "$here/lib.sh"
+[ -n "$DESKTOP" ] && source "$here/onboarding.sh"
 touch "$OUT/.started"
 # The report runs outside a distro container, so leave the app's log (redacted there) and
 # the text box's event log in the shared folder, however this script ends.
@@ -171,6 +172,11 @@ else
 fi
 sleep 3
 ui_dump signed-in
+# GNOME and KDE: the rest of the onboarding, including the desktop's paste permission dialog.
+if [ -n "$DESKTOP" ] && signed_in; then
+  onboarding_walk
+  start_portal_watch
+fi
 
 # --- 3. Relaunch signed in ------------------------------------------------------------
 mounts_before=$(appimage_mounts)
@@ -284,7 +290,11 @@ if app_has 'data-missed-action'; then
     # box and presses Enter. (The app is an X11 client in both sessions, directly or
     # through XWayland, so xdotool reaches it; AT-SPI doesn't see GTK's dialog here.)
     dialog=""
-    if [ "$SESSION" = wayland ] && wait_until 10 bash -c "swaymsg -t get_tree | grep -q '\"Save audio\"'"; then
+    if [ -n "$DESKTOP" ] && wait_until 15 bash -c "'$PY' '$here/atspi.py' windows portal | grep -q 'Save audio'"; then
+      # GNOME and KDE: Electron asks the desktop's file chooser portal; its dialog is the
+      # desktop's own (GTK 4 or Qt), which AT-SPI reaches: type the path, press Save.
+      dialog="desktop's file chooser: $(with_timeout 40 "$PY" "$here/atspi.py" save-as portal "$saved_to" 2>&1)"
+    elif [ -z "$DESKTOP" ] && [ "$SESSION" = wayland ] && wait_until 10 bash -c "swaymsg -t get_tree | grep -q '\"Save audio\"'"; then
       # Under Sway, xdotool's keys don't reach XWayland windows; focus it with Sway and
       # type with wtype (one run, so its virtual keyboard stays; the pause lets it settle).
       # Whose dialog is it: the app's own GTK one (XWayland) or a desktop portal's?
@@ -348,6 +358,8 @@ print("" if r is None or r.get("status") == "missed" else (r.get("text") or "").
 else
   record SKIP "Failed transcription is kept as a Missed item" "this build has no Missed items"
 fi
+
+[ -n "$DESKTOP" ] && report_portal_watch
 
 # History.
 history=$(python3 -c '

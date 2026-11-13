@@ -31,6 +31,12 @@ echo 'tester ALL=(ALL) NOPASSWD: ALL' > /etc/sudoers.d/tester
 chmod 0440 /etc/sudoers.d/tester
 
 TEST_USER=tester bash "$here/setup-runner.sh" || exit 1
+if [ -n "${DESKTOP:-}" ]; then
+  # GNOME Shell and the portals talk to the system bus (logind, polkit, …), which a
+  # container doesn't start. Without logind GNOME Shell runs as it does without systemd.
+  mkdir -p /run/dbus; dbus-daemon --system --fork 2> /dev/null || true
+  bash "$here/uinput-as-installed.sh"
+fi
 # Keep the variables the scripts need; HOME and USER become the test user's.
-exec sudo -u tester --preserve-env=RUNNER_TEMP,OUT,SESSION,TAG,VERSION,LATEST_TAG,DL,APPIMAGE_FILE,PREV_APPIMAGE,SPEECH_DIR,BLIP_TEST_EMAIL,BLIP_TEST_PASSWORD,PUBLISH_SIGNED_IN_SCREENSHOTS \
+exec sudo -u tester --preserve-env=RUNNER_TEMP,OUT,SESSION,DESKTOP,TAG,VERSION,LATEST_TAG,DL,APPIMAGE_FILE,PREV_APPIMAGE,SPEECH_DIR,BLIP_TEST_EMAIL,BLIP_TEST_PASSWORD,PUBLISH_SIGNED_IN_SCREENSHOTS \
   env HOME=/home/tester USER=tester LOGNAME=tester bash "$here/user-steps.sh"
