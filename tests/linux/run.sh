@@ -11,7 +11,14 @@ sudo modprobe uinput 2> /dev/null || true
 if [ -z "${IMAGE:-}" ]; then
   sudo --preserve-env=RUNNER_TEMP,DESKTOP TEST_USER="$(id -un)" bash "$here/setup-runner.sh" || exit 1
   [ -e /dev/uinput ] && sudo chmod 0666 /dev/uinput
-  [ -n "${DESKTOP:-}" ] && sudo bash "$here/uinput-as-installed.sh"
+  if [ -n "${DESKTOP:-}" ]; then
+    sudo bash "$here/uinput-as-installed.sh"
+    # As after the website's "log out and back in": a new login of the same user, now with
+    # `input` among its groups. (Starting the app through `sg input` instead gives it another
+    # primary group than the desktop's portal, and the kernel then won't let the portal look
+    # at the app's /proc entry to tell who's asking: its CreateSession calls went unanswered.)
+    exec sudo -E -u "$(id -un)" env PATH="$PATH" HOME="$HOME" bash "$here/user-steps.sh"
+  fi
   bash "$here/user-steps.sh"
 else
   input_gid=$(getent group input | cut -d: -f3)

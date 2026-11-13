@@ -25,6 +25,27 @@ env_out XDG_RUNTIME_DIR "$rt"
 
 # D-Bus session bus, and accessibility switched on (Chromium reads org.a11y.Status).
 if [ -n "${DESKTOP:-}" ]; then
+  # What the login sets before anything in the session starts (gnome-session, plasma's
+  # startup), so the session bus hands it to every service it starts. GNOME Shell starts
+  # xdg-desktop-portal at login; started without XDG_CURRENT_DESKTOP it picks the GTK
+  # fallback, which has no RemoteDesktop (run 43417362515).
+  . /etc/os-release
+  env_out XDG_SESSION_TYPE wayland
+  env_out WAYLAND_DISPLAY wayland-0   # the compositor's socket (gnome-shell and kwin are told so below)
+  if [ "$DESKTOP" = gnome ]; then
+    # Ubuntu's session is "ubuntu:GNOME", Fedora's "GNOME".
+    if [ "$ID" = ubuntu ]; then env_out XDG_CURRENT_DESKTOP ubuntu:GNOME; env_out XDG_SESSION_DESKTOP ubuntu
+    else env_out XDG_CURRENT_DESKTOP GNOME; env_out XDG_SESSION_DESKTOP gnome; fi
+    env_out DESKTOP_SESSION "$XDG_SESSION_DESKTOP"
+    env_out GNOME_DESKTOP_SESSION_ID this-is-deprecated   # gnome-session sets it; Ubuntu's xdg-open 1.1.3 knows GNOME by it
+  else
+    env_out XDG_CURRENT_DESKTOP KDE
+    env_out XDG_SESSION_DESKTOP KDE
+    env_out DESKTOP_SESSION plasma
+    env_out KDE_FULL_SESSION true
+    env_out KDE_SESSION_VERSION 6
+    env_out QT_LINUX_ACCESSIBILITY_ALWAYS_ON 1
+  fi
   # GNOME and KDE logins get their session bus from systemd, at a path
   # (unix:path=/run/user/UID/bus). dbus-launch's is an abstract socket, which the app's
   # D-Bus library (dbus-next) reaches only through a native module the AppImage doesn't
@@ -68,14 +89,7 @@ start_virtual_keyboard() {  # GNOME and KDE: /dev/uinput is root's there (uinput
   fi
 }
 if [ -n "${DESKTOP:-}" ]; then
-  . /etc/os-release
-  env_out XDG_SESSION_TYPE wayland
   if [ "$DESKTOP" = gnome ]; then
-    # What a GNOME login sets: Ubuntu's session is "ubuntu:GNOME", Fedora's "GNOME".
-    if [ "$ID" = ubuntu ]; then env_out XDG_CURRENT_DESKTOP ubuntu:GNOME; env_out XDG_SESSION_DESKTOP ubuntu
-    else env_out XDG_CURRENT_DESKTOP GNOME; env_out XDG_SESSION_DESKTOP gnome; fi
-    env_out DESKTOP_SESSION "$XDG_SESSION_DESKTOP"
-    env_out GNOME_DESKTOP_SESSION_ID this-is-deprecated   # gnome-session sets it; Ubuntu's xdg-open 1.1.3 knows GNOME by it
     # Screen readers' setting (GNOME Shell and GTK fill the accessibility tree), no screen
     # lock in a headless session, and the test's stand-in for the keyboard and mouse
     # (gnome-shell-extension/: a keyboard on the seat, focus by title, screenshots).
@@ -89,7 +103,8 @@ if [ -n "${DESKTOP:-}" ]; then
     gsettings set org.gnome.shell disable-user-extensions false
     args=(--headless --virtual-monitor 1280x800)
     gnome-shell --help 2>&1 | grep -q -- '--wayland ' && args=(--wayland "${args[@]}")
-    setsid gnome-shell "${args[@]}" > "$OUT/gnome-shell.log" 2>&1 < /dev/null &
+    gnome-shell --help 2>&1 | grep -q -- '--wayland-display' && args+=(--wayland-display wayland-0)
+    setsid env -u WAYLAND_DISPLAY gnome-shell "${args[@]}" > "$OUT/gnome-shell.log" 2>&1 < /dev/null &
     wait_until 60 bash -c "ls '$XDG_RUNTIME_DIR'/wayland-* 2>/dev/null | grep -qv lock"
     env_out WAYLAND_DISPLAY "$(basename "$(ls "$XDG_RUNTIME_DIR"/wayland-* | grep -v lock | head -n 1)")"
     # Mutter runs Xwayland for X11 apps (the app is one) and says on which display.
@@ -103,19 +118,13 @@ if [ -n "${DESKTOP:-}" ]; then
       record HARNESS "Session: GNOME Shell with the test's helper" "no GNOME Shell or its test extension after 60 s: $(grep -E 'ERROR|JS ERROR|Error|extension' "$OUT/gnome-shell.log" | tail -n 3 | paste -sd' ' | cut -c1-250)"
     fi
   else
-    env_out XDG_CURRENT_DESKTOP KDE
-    env_out XDG_SESSION_DESKTOP KDE
-    env_out DESKTOP_SESSION plasma
-    env_out KDE_FULL_SESSION true
-    env_out KDE_SESSION_VERSION 6
-    env_out QT_LINUX_ACCESSIBILITY_ALWAYS_ON 1
     kbuildsycoca6 > "$OUT/kbuildsycoca.log" 2>&1
     setsid pipewire > "$OUT/pipewire.log" 2>&1 < /dev/null &
     sleep 1
     setsid wireplumber > "$OUT/wireplumber.log" 2>&1 < /dev/null &
     xs_before=$(ls /tmp/.X11-unix 2> /dev/null | xargs)
     QT_FORCE_STDERR_LOGGING=1 QT_LOGGING_RULES="kwin_core.debug=false;kwin_scripting.debug=true" \
-      setsid kwin_wayland --virtual --xwayland --width 1280 --height 800 --socket wayland-0 > "$OUT/kwin.log" 2>&1 < /dev/null &
+      setsid env -u WAYLAND_DISPLAY kwin_wayland --virtual --xwayland --width 1280 --height 800 --socket wayland-0 > "$OUT/kwin.log" 2>&1 < /dev/null &
     wait_until 60 test -S "$XDG_RUNTIME_DIR/wayland-0"
     env_out WAYLAND_DISPLAY wayland-0
     wait_until 30 bash -c "[ \"\$(ls /tmp/.X11-unix 2>/dev/null | xargs)\" != '$xs_before' ]"
@@ -136,7 +145,8 @@ if [ -n "${DESKTOP:-}" ]; then
   # RemoteDesktop portal calls (the paste path) and its notifications (the clipboard fallback).
   setsid dbus-monitor --session "interface='org.freedesktop.portal.RemoteDesktop'" \
     "type='signal',interface='org.freedesktop.portal.Request',member='Response'" \
-    "interface='org.freedesktop.Notifications',member='Notify'" > "$OUT/portal-dbus.log" 2>&1 < /dev/null &
+    "interface='org.freedesktop.Notifications',member='Notify'" \
+    "type='error',sender='org.freedesktop.portal.Desktop'" > "$OUT/portal-dbus.log" 2>&1 < /dev/null &
   # Does the desktop's RemoteDesktop portal answer? (No dialog for this step.) If it
   # doesn't, the app's paste permission can't work here, and that's the harness's problem.
   if probe=$(with_timeout 70 "$PY" "$here/portal-probe.py" 60 2>&1); then

@@ -54,12 +54,16 @@ key_listener() {  # prints how the app listens for the hotkey, or nothing
     [ -n "$k" ] && echo "X11KeyServer running (pid $k: $(readlink /proc/$k/exe 2> /dev/null))"
   fi
 }
-mount_holders() {  # "; held by: pid comm (cwd or open file)" for what keeps the AppImage mounted
-  local m p hit
+mount_holders() {  # "; held by PID COMM (its working directory / an open file …)": what keeps the AppImage mounted
+  local m p how f
   for m in $(mount | grep -o '/tmp/.mount_Blip[^ ]*'); do
     for p in /proc/[0-9]*; do
-      hit=$( { readlink "$p/cwd"; readlink "$p/exe"; ls -l "$p/fd" 2> /dev/null | awk '{print $NF}'; } 2> /dev/null | grep -m1 -F "$m")
-      [ -n "$hit" ] && printf '; held by %s %s (%s)' "${p#/proc/}" "$(cat "$p/comm" 2> /dev/null)" "${hit#$m}"
+      how=""
+      case "$(readlink "$p/cwd" 2> /dev/null)" in "$m"|"$m"/*) how="its working directory is in the mount" ;; esac
+      case "$(readlink "$p/exe" 2> /dev/null)" in "$m"/*) how="${how:+$how, }it runs from the mount" ;; esac
+      f=$(ls -l "$p/fd" 2> /dev/null | awk '{print $NF}' | grep -m1 -F "$m")
+      [ -n "$f" ] && how="${how:+$how, }it has ${f#$m} open"
+      [ -n "$how" ] && printf '; held by %s %s (%s)' "${p#/proc/}" "$(cat "$p/comm" 2> /dev/null)" "$how"
     done
   done
 }
