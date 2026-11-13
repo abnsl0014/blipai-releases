@@ -75,10 +75,22 @@ retry() {  # retry COMMAND...: up to 4 tries, 10/20/30 s apart, for network blip
 # with sox, which starts at once: `say` itself can take ~3 s to start talking on a cold
 # runner (seen on macOS 26), which would put unpredictable silence into every dictation.
 speech_file() { echo "$RUNNER_TEMP/speech-$(printf '%s' "$1" | shasum | cut -c1-12).aiff"; }
+speech_seconds() {  # length of a rendered phrase, in whole seconds (0 if unreadable)
+  afinfo "$1" 2>/dev/null | awk '/estimated duration/ {printf "%d", $3}' | grep . || echo 0
+}
 render_speech() {  # render_speech "text"... → synthesize ahead of time
-  local text
+  # `say -o` has written files with a header and no sound (run 21, macOS 26): played,
+  # they end at once, so Fn was released 2 s after it was pressed and every recording
+  # was silent. Check the length and render again; each phrase lasts 2 s or more.
+  local text f try
   for text in "$@"; do
-    [ -s "$(speech_file "$text")" ] || with_timeout 60 say -o "$(speech_file "$text")" "$text"
+    f=$(speech_file "$text")
+    for try in 1 2 3; do
+      [ -s "$f" ] && [ "$(speech_seconds "$f")" -ge 2 ] && break
+      rm -f "$f"
+      with_timeout 60 say -o "$f" "$text"
+    done
+    [ "$(speech_seconds "$f")" -ge 2 ] || echo "$(date -u +%T) say rendered no sound for: $text" >> "$OUT/sox-retries.txt"
   done
 }
 speak() {  # speak "text" → plays it into BlackHole 2ch and returns when it has finished
