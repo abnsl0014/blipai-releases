@@ -28,7 +28,7 @@ where=$(cat "$OUT/distro.txt" 2>/dev/null || distro)
   echo
   echo "| | Check | Detail |"
   echo "|---|---|---|"
-  while IFS=$'\t' read -r status name detail; do
+  while IFS=$'\t' read -r status name detail _at; do
     case "$status" in
       PASS) icon="✅" ;; FAIL) icon="❌" ;; WARN|SKIP) icon="⚠️" ;; *) icon="ℹ️" ;;
     esac

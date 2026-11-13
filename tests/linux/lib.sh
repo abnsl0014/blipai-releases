@@ -23,7 +23,7 @@ record() {  # record STATUS "check" "detail"
   local status="$1" check="$2" detail="${3:-}"
   detail="${detail//$'\t'/ }"
   detail="${detail//$'\n'/ }"
-  printf '%s\t%s\t%s\n' "$status" "$check" "$detail" >> "$RESULTS"
+  printf '%s\t%s\t%s\t%s\n' "$status" "$check" "$detail" "$(date -u +%T)" >> "$RESULTS"   # the time lines it up with the logs
   case "$status" in
     FAIL) echo "::error title=$check::$detail" ;;
     WARN|SKIP) echo "::warning title=$check::$detail" ;;
@@ -120,8 +120,25 @@ log_has() { local l; l=$(app_log); [ -n "$l" ] && grep -qa -- "$1" "$l"; }
 # Starts the AppImage the way the website says (~/.local/bin/BlipAI.AppImage), with
 # Chromium's accessibility tree on so the test can read the windows. On Wayland it runs
 # with the `input` group, as after the website's "join the input group, then log in again".
+wtype_shim() {  # Wayland: puts a wtype in front of the real one that notes each call the app
+  # makes and whether Blip's overlay was on screen then (run 4, Debian 13 on Sway: every
+  # dictation was transcribed but its text never reached the box; Paste last, with no
+  # overlay, did). Prints the folder to put first on the app's PATH.
+  local dir="$RUNNER_TEMP/shim" real
+  real=$(command -v wtype) || return 0
+  mkdir -p "$dir"
+  cat > "$dir/wtype" << EOF
+#!/bin/sh
+v=no; DISPLAY="$DISPLAY" xdotool search --onlyvisible --name '^Blip AI Overlay\$' > /dev/null 2>&1 && v=yes
+echo "\$(date +%T.%3N) wtype called; Blip's overlay on screen: \$v" >> "$OUT/wtype-calls.log"
+exec "$real" "\$@"
+EOF
+  chmod +x "$dir/wtype"
+  echo "$dir"
+}
 launch_app() {  # launch_app [ARGS...]
-  local cmd=("$APPIMAGE_PATH" --force-renderer-accessibility ${APP_EXTRA_ARGS:-} "$@")
+  local cmd=("$APPIMAGE_PATH" --force-renderer-accessibility ${APP_EXTRA_ARGS:-} "$@") shim
+  if [ "$SESSION" = wayland ]; then shim=$(wtype_shim); [ -n "$shim" ] && cmd=(env "PATH=$shim:$PATH" "${cmd[@]}"); fi
   if [ "$SESSION" = wayland ] && ! id -nG | grep -qw input; then
     setsid sg input -c "$(printf '%q ' "${cmd[@]}")" >> "$OUT/app-stdout.log" 2>> "$OUT/app-stderr.log" < /dev/null &
   else
@@ -182,8 +199,10 @@ PY
 judge() {  # judge CHECK EXPECTED ACTUAL [MIN_RECALL%]
   local name="$1" expected="$2" actual="$3" min="${4:-70}" recall shown
   if [ -z "$(printf '%s' "$actual" | tr -d '[:space:]')" ]; then
-    local got; got=$(tail -n 6 "$TARGET_FILE.events" 2>/dev/null | cut -c14- | paste -sd, - | cut -c1-200)
-    record FAIL "$name" "nothing was typed into the text box within 30 s; the box got: ${got:-nothing}"
+    local got wt=""; got=$(tail -n 6 "$TARGET_FILE.events" 2>/dev/null | cut -c14- | paste -sd, - | cut -c1-200)
+    # On Wayland, say whether the app typed at all, and whether its overlay was up then.
+    [ "$SESSION" = wayland ] && [ -s "$OUT/wtype-calls.log" ] && wt="; last wtype call: $(tail -n 1 "$OUT/wtype-calls.log")"
+    record FAIL "$name" "nothing was typed into the text box within 30 s; the box got: ${got:-nothing}$wt"
     return 1
   fi
   recall=$(word_recall "$actual" "$expected")
