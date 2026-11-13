@@ -94,7 +94,9 @@ speak() {  # speak "text": plays it into the virtual mic and returns when it has
 xkey() { case "$1" in super|win) echo Super_L ;; ctrl) echo Control_L ;; shift) echo Shift_L ;; alt) echo Alt_L ;;
   space) echo space ;; escape) echo Escape ;; return) echo Return ;; *) echo "$1" ;; esac; }
 key() {  # key down|up|tap NAME
-  if [ "$SESSION" = wayland ]; then echo "$1 $2" > "$KEYS_FIFO"; sleep 0.05
+  if [ "$SESSION" = wayland ]; then  # (a write to the FIFO waits for keys.py; don't wait forever)
+    timeout 3 sh -c 'echo "$1 $2" > "$3"' _ "$1" "$2" "$KEYS_FIFO" || echo "key $1 $2: the virtual keyboard isn't listening" >&2
+    sleep 0.05
   else
     case "$1" in down) xdotool keydown "$(xkey "$2")" ;; up) xdotool keyup "$(xkey "$2")" ;; tap) xdotool key "$(xkey "$2")" ;; esac
     sleep 0.04

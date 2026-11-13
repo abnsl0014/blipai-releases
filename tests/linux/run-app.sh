@@ -69,7 +69,8 @@ sleep 15
 if ! app_running && grep -qiE 'sandbox|setuid' "$OUT/app-stderr.log"; then
   # What a person sees when Chromium's sandbox can't start (e.g. Ubuntu 24.04's AppArmor
   # limits on user namespaces): the app exits at once. Note it, and go on with --no-sandbox.
-  record FAIL "Starts without extra flags" "exits at once: $(grep -m1 -iE 'sandbox|setuid' "$OUT/app-stderr.log" | cut -c1-220)"
+  userns=$(cat /proc/sys/kernel/apparmor_restrict_unprivileged_userns 2>/dev/null || echo n/a)
+  record FAIL "Starts without extra flags" "exits at once on $(distro): Chromium's sandbox can't start (apparmor_restrict_unprivileged_userns=$userns; Ubuntu's default is 1 since 23.10): $(grep -m1 -iE 'sandbox|setuid' "$OUT/app-stderr.log" | sed 's/^\[[^]]*\] *//' | cut -c1-160). A user must run it with --no-sandbox; the test does from here on"
   echo "export APP_EXTRA_ARGS=--no-sandbox" >> "$SESSION_ENV"; export APP_EXTRA_ARGS=--no-sandbox
   launch_app; sleep 15
 fi

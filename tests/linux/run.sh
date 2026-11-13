@@ -14,6 +14,13 @@ if [ -z "${IMAGE:-}" ]; then
   bash "$here/user-steps.sh"
 else
   input_gid=$(getent group input | cut -d: -f3)
+  # The container shares this Ubuntu runner's kernel, including Ubuntu's AppArmor limit
+  # on unprivileged user namespaces (Chromium's sandbox needs them). Debian, Fedora and
+  # Arch don't set that limit, so lift it for the container's run.
+  if [ "$(cat /proc/sys/kernel/apparmor_restrict_unprivileged_userns 2>/dev/null)" = 1 ]; then
+    sudo sysctl -q -w kernel.apparmor_restrict_unprivileged_userns=0
+    record INFO "Runner's AppArmor limit on user namespaces" "lifted for the $IMAGE container, as on that distro"
+  fi
   docker pull -q "$IMAGE" > /dev/null || retry docker pull -q "$IMAGE" > /dev/null
   docker run --rm --privileged -v /dev:/dev \
     -v "$GITHUB_WORKSPACE:$GITHUB_WORKSPACE" -v "$RUNNER_TEMP:$RUNNER_TEMP" -w "$GITHUB_WORKSPACE" \
