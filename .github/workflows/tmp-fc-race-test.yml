@@ -46,7 +46,7 @@ jobs:
           PKGS="xvfb x11-utils dbus-x11 gcc libc6-dev libfontconfig1 libgtk-3-0 libnss3 libgbm1 libasound2 libxss1 libxtst6 procps psmisc curl ca-certificates fuse3 libfuse2 file"
           if grep -q 'VERSION_ID="24.04"' /etc/os-release; then PKGS="${PKGS/libfuse2/libfuse2t64}"; PKGS="${PKGS/libasound2 /libasound2t64 }"; PKGS="${PKGS/libgtk-3-0 /libgtk-3-0t64 }"; fi
           [ "${{ matrix.session }}" = wayland ] && PKGS="$PKGS weston xwayland"
-          $SUDO DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends $PKGS > /dev/null
+          $SUDO env DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends $PKGS > /dev/null
           if ! command -v gh > /dev/null; then
             curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg -o /usr/share/keyrings/gh.gpg
             echo "deb [signed-by=/usr/share/keyrings/gh.gpg] https://cli.github.com/packages stable main" > /etc/apt/sources.list.d/gh.list
