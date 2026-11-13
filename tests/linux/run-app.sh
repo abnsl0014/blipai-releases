@@ -192,6 +192,19 @@ if [ -n "$DESKTOP" ] && signed_in; then
 fi
 
 # --- 3. Relaunch signed in ------------------------------------------------------------
+# The sign-in link started a second instance that hands the link to the running app and
+# exits (about 1 s since 0.5.10's fix). Quit only once it has: an app quitting while a
+# launch is still handing off gives that launch the app (Chromium's single-instance lock
+# does that by design), which no person clicking a link and then quitting would hit.
+link_launch_gone() { ! pgrep -u "$(id -u)" -f -- "$APP_PROCESS.*blipai://" > /dev/null; }
+link_start=$(date +%s)
+if wait_until 20 link_launch_gone; then
+  record INFO "The sign-in link's launch exits" "after $(( $(date +%s) - link_start )) s or less"
+else
+  hang_snapshot link-launch
+  record FAIL "The sign-in link's launch exits" "still running 20 s after the link was handled: $(pgrep -u "$(id -u)" -af -- "$APP_PROCESS.*blipai://" | cut -c1-120 | sed -E 's/(token|refresh_token)=[^& ]*/\1=<redacted>/g' | head -n 2 | paste -sd' ')"
+  pkill -9 -u "$(id -u)" -f -- "$APP_PROCESS.*blipai://" 2> /dev/null
+fi
 mounts_before=$(appimage_mounts)
 quit_app && record PASS "Quits after onboarding" "" || { record FAIL "Quits after onboarding" "still running 20 s after SIGTERM: ${QUIT_LEFT:-?}"; pkill -9 -x "$APP_PROCESS"; }
 sleep 2
