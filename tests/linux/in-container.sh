@@ -26,6 +26,7 @@ if [ -n "$HOST_INPUT_GID" ]; then
   echo "input group in the container: $(getent group input)${other:+ (moved $other off gid $HOST_INPUT_GID)}"
 fi
 id tester > /dev/null 2>&1 || useradd -m -u "$HOST_UID" -s /bin/bash tester
+mkdir -p /etc/sudoers.d   # Arch's image has no sudo yet, so no such folder (and the test user's sudo asked for a password)
 echo 'tester ALL=(ALL) NOPASSWD: ALL' > /etc/sudoers.d/tester
 chmod 0440 /etc/sudoers.d/tester
 

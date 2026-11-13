@@ -32,10 +32,13 @@ signed_in() {
   [ -n "$c" ] && python3 -c 'import json, sys; sys.exit(0 if json.load(open(sys.argv[1])).get("authToken") else 1)' "$c"
 }
 key_server_pids() {  # pids running the app's X11KeyServer. app.asar holds it packed, so
-  # Electron runs a copy from a temp file with another name: compare the binary itself.
-  local p
+  # Electron runs a copy from a temp file with another name: compare the binary itself
+  # (size, then md5sum: Fedora's and Arch's images have no cmp).
+  local p size sum
+  if [ -n "${KEY_SERVER:-}" ]; then size=$(stat -c %s "$KEY_SERVER"); sum=$(md5sum < "$KEY_SERVER"); fi
   for p in $(pgrep -u "$(id -u)"); do
-    if [ -n "${KEY_SERVER:-}" ]; then cmp -s "/proc/$p/exe" "$KEY_SERVER" 2> /dev/null && echo "$p"
+    if [ -n "${KEY_SERVER:-}" ]; then
+      [ "$(stat -L -c %s "/proc/$p/exe" 2> /dev/null)" = "$size" ] && [ "$(md5sum < "/proc/$p/exe" 2> /dev/null)" = "$sum" ] && echo "$p"
     else tr '\0' ' ' < "/proc/$p/cmdline" 2> /dev/null | grep -q X11KeyServer && echo "$p"; fi
   done
 }
@@ -72,7 +75,7 @@ render_speech "The quick brown fox jumps over the lazy dog near the river bank."
 [ -s "$OUT/speech-fallback.txt" ] && record INFO "Test voice" "espeak-ng (the voice job's recordings were missing)"
 
 # --- 1. First launch, signed out ---------------------------------------------------
-if ! launch_app; then
+if ! launch_app && ! grep -qiE 'sandbox|setuid' "$OUT/app-stderr.log"; then   # (a sandbox exit is its own check below)
   record FAIL "Launches" "no $APP_PROCESS process after 40 s: $(tail -n 3 "$OUT/app-stderr.log" | tr '\n' ' ' | cut -c1-250)"
 fi
 sleep 15
@@ -105,9 +108,16 @@ if [ "$SESSION" = x11 ] && [ -n "${KEY_SERVER:-}" ]; then
     record FAIL "X11 hotkey helper (keyspy X11KeyServer) runs here" "$KEY_SERVER_ERROR. Push-to-talk and hands-free can't work in an X11 session on this distro"
   fi
 fi
-windows=$(app_windows)
-if grep -qi welcome <<< "$windows"; then record PASS "Shows onboarding on first launch" "windows: $windows"
-else record FAIL "Shows onboarding on first launch" "windows: ${windows:-none readable over AT-SPI}"; fi
+# The window was up within 15 s in most runs; once (Debian 12, X11) none had shown, though
+# the app was running. Wait up to 45 s and say how long it took.
+shown_at=""; started=$(date +%s)
+for i in $(seq 1 15); do
+  windows=$(app_windows)
+  grep -qi welcome <<< "$windows" && { shown_at=$(( $(date +%s) - started + 15 )); break; }
+  sleep 2
+done
+if [ -n "$shown_at" ]; then record PASS "Shows onboarding on first launch" "windows: $windows (up within ${shown_at} s of launch)"
+else screenshot first-launch-late; record FAIL "Shows onboarding on first launch" "no window ${windows:+other than $windows }45 s after launch, though the app is running"; fi
 ui_dump onboarding
 record INFO "Onboarding text" "$(grep -v '^== window' "$OUT/ui-onboarding.txt" | awk 'NF' | head -n 12 | paste -sd'|' | cut -c1-300)"
 
