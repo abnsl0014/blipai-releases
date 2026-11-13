@@ -276,6 +276,7 @@ if app_has 'data-missed-action'; then
     record PASS "Failed transcription is kept as a Missed item" "overlay: $(grep -v '^== window' "$OUT/ui-missed-error.txt" | grep -iE 'fail|couldn|error|missed|saved' | head -n 1 | cut -c1-100)"
     setsid "$APPIMAGE_PATH" ${APP_EXTRA_ARGS:-} > /dev/null 2>&1 < /dev/null &   # opening the app again brings its window up
     sleep 4
+    touch "$OUT/.before-save"
     pressed=$(press "Save audio")
     sleep 2
     saved_to="$HOME/Documents/BlipAI-saved-by-test.wav"; mkdir -p "$HOME/Documents"
@@ -309,10 +310,21 @@ walk(json.load(sys.stdin))' 2> /dev/null | head -n 1)
       dialog=$(with_timeout 40 "$PY" "$here/atspi.py" save-as "$APP_PROCESS" "$saved_to" 2>&1)
     fi
     sleep 3
+    if [ "$SESSION" = wayland ] && [ ! -s "$saved_to" ] && swaymsg -t get_tree | grep -q '"Save audio"'; then
+      # Still open with nothing saved (Arch's XWayland, once): try once more through XTEST,
+      # which XWayland delivers to the X window Sway just focused.
+      swaymsg '[title="^Save audio$"] focus' > /dev/null 2>&1; sleep 0.5
+      xdotool key --clearmodifiers ctrl+a; sleep 0.2; xdotool type --delay 20 "$saved_to"; sleep 0.4; xdotool key Return
+      dialog="$dialog; still open, so typed it again with xdotool"
+      sleep 3
+    fi
     if [ -s "$saved_to" ] && [ "$(stat -c %s "$saved_to")" -gt 10000 ]; then
       record PASS "Missed item: Save audio writes the recording" "$(stat -c %s "$saved_to") bytes ($dialog)"
     else
-      record FAIL "Missed item: Save audio writes the recording" "press: $(cut -c1-80 <<< "$pressed"); dialog: $(cut -c1-100 <<< "$dialog")"
+      # Saved under another name (a garbled path), or not at all?
+      other=$(find "$HOME" -maxdepth 3 -newer "$OUT/.before-save" -name '*.wav' 2> /dev/null | head -n 3 | paste -sd' ')
+      open_now=$( [ "$SESSION" = wayland ] && swaymsg -t get_tree | grep -q '"Save audio"' && echo "; the dialog is still open")
+      record FAIL "Missed item: Save audio writes the recording" "press: $(cut -c1-80 <<< "$pressed"); dialog: $(cut -c1-160 <<< "$dialog"); other new .wav files: ${other:-none}$open_now"
     fi
     pressed=$(press "Retry")
     retried=""
