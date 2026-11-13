@@ -140,7 +140,7 @@ else record INFO "Update check on launch" "$(sed 's/.*\] //' <<< "$update_line" 
 # --- 2. Sign in ---------------------------------------------------------------------
 if [ -z "${BLIP_TEST_EMAIL:-}" ] || [ -z "${BLIP_TEST_PASSWORD:-}" ]; then
   record SKIP "Sign in and dictation" "add the BLIP_TEST_EMAIL and BLIP_TEST_PASSWORD secrets to test them"
-  quit_app && record PASS "Quits" "" || record FAIL "Quits" "still running 20 s after SIGTERM"
+  quit_app && record PASS "Quits" "" || record FAIL "Quits" "still running 20 s after SIGTERM: ${QUIT_LEFT:-?}"
   exit 0
 fi
 session=$(curl -sS --max-time 30 -X POST "$SUPABASE_URL/auth/v1/token?grant_type=password" \
@@ -174,7 +174,7 @@ ui_dump signed-in
 
 # --- 3. Relaunch signed in ------------------------------------------------------------
 mounts_before=$(appimage_mounts)
-quit_app && record PASS "Quits after onboarding" "" || { record FAIL "Quits after onboarding" "still running 20 s after SIGTERM"; pkill -9 -x "$APP_PROCESS"; }
+quit_app && record PASS "Quits after onboarding" "" || { record FAIL "Quits after onboarding" "still running 20 s after SIGTERM: ${QUIT_LEFT:-?}"; pkill -9 -x "$APP_PROCESS"; }
 sleep 2
 launch_app; sleep 15
 screenshot relaunch-signed-in
@@ -286,9 +286,18 @@ if app_has 'data-missed-action'; then
     if [ "$SESSION" = wayland ] && wait_until 10 bash -c "swaymsg -t get_tree | grep -q '\"Save audio\"'"; then
       # Under Sway, xdotool's keys don't reach XWayland windows; focus it with Sway and
       # type with wtype (one run, so its virtual keyboard stays; the pause lets it settle).
+      # Whose dialog is it: the app's own GTK one (XWayland) or a desktop portal's?
+      owner=$(swaymsg -t get_tree | python3 -c '
+import json, sys
+def walk(n):
+    if n.get("name") == "Save audio":
+        wp = n.get("window_properties") or {}
+        print(n.get("shell"), n.get("app_id") or wp.get("class"), "focused" if n.get("focused") else "")
+    for c in n.get("nodes", []) + n.get("floating_nodes", []): walk(c)
+walk(json.load(sys.stdin))' 2> /dev/null | head -n 1)
       swaymsg '[title="^Save audio$"] focus' > /dev/null 2>&1; sleep 0.6
       wtype -s 400 -M ctrl -k a -m ctrl -s 200 "$saved_to" -s 300 -k Return
-      dialog="focused the Save audio dialog with Sway, typed the path with wtype and pressed Enter"
+      dialog="focused the Save audio dialog ($owner) with Sway, typed the path with wtype and pressed Enter"
     elif wait_until 10 xdotool search --name '^Save audio$'; then
       wid=$(xdotool search --name '^Save audio$' | head -n 1)
       xdotool windowactivate --sync "$wid" > /dev/null 2>&1; sleep 0.6
@@ -374,7 +383,7 @@ fi
 target_has_text && record FAIL "Signed out: nothing is typed" "typed: \"$(target_text | cut -c1-80)\""
 
 # --- 6. Quit ----------------------------------------------------------------------------
-quit_app && record PASS "Quits (SIGTERM, as at logout)" "" || { record FAIL "Quits (SIGTERM, as at logout)" "still running 20 s after SIGTERM"; pkill -9 -x "$APP_PROCESS"; }
+quit_app && record PASS "Quits (SIGTERM, as at logout)" "" || { record FAIL "Quits (SIGTERM, as at logout)" "still running 20 s after SIGTERM: ${QUIT_LEFT:-?}"; pkill -9 -x "$APP_PROCESS"; }
 sleep 2
 if [ -n "$(key_server_pids)" ]; then record FAIL "Key listener exits with the app" "X11KeyServer still running"
 else record PASS "Key listener exits with the app" ""; fi
@@ -385,7 +394,8 @@ fi
 
 # Relaunching with that ended session asks the user to sign in again.
 launch_app; sleep 15
-if app_windows | grep -qi welcome; then record PASS "Relaunch with an ended session shows sign-in" "windows: $(app_windows)"
-else record FAIL "Relaunch with an ended session shows sign-in" "windows: $(app_windows)"; fi
+windows=""; for i in $(seq 1 10); do windows=$(app_windows); grep -qi welcome <<< "$windows" && break; sleep 3; done
+if grep -qi welcome <<< "$windows"; then record PASS "Relaunch with an ended session shows sign-in" "windows: $windows"
+else record FAIL "Relaunch with an ended session shows sign-in" "windows: ${windows:-none readable over AT-SPI} 45 s after launch$(app_running || echo '; the app is not running')"; fi
 quit_app || pkill -9 -x "$APP_PROCESS"
 exit 0

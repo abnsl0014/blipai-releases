@@ -157,7 +157,16 @@ quit_app() {  # SIGTERM to the main process, as a logout or `systemctl stop` sen
   # process kills Chromium's GPU and network helpers under it, and it aborts.)
   local pid; pid=$(app_main_pid)
   [ -n "$pid" ] && kill -TERM "$pid" 2>/dev/null
-  wait_until 20 bash -c "! pgrep -x '$APP_PROCESS' > /dev/null"
+  wait_until 20 bash -c "! pgrep -x '$APP_PROCESS' > /dev/null" && return 0
+  # Still up: note which processes are left and what they're doing, for the report
+  # (release builds log nothing on quit). QUIT_LEFT is read by the caller.
+  QUIT_LEFT=$(for p in $(pgrep -x "$APP_PROCESS"); do
+    printf '%s %s(%s, %s) ' "$( [ "$p" = "$pid" ] && echo main || echo helper)" \
+      "$(tr '\0' ' ' < /proc/$p/cmdline 2> /dev/null | grep -oE -- '--type=[a-z-]+' | head -n 1)" \
+      "$(awk '{print $3}' /proc/$p/stat 2> /dev/null)" "$(cat /proc/$p/wchan 2> /dev/null)"
+  done)
+  ps -o pid,ppid,stat,etime,args -p "$(pgrep -d, -x "$APP_PROCESS")" > "$OUT/quit-left-$(date +%H%M%S).txt" 2>&1
+  return 1
 }
 app_windows() { with_timeout 20 "$PY" "$here_lib/atspi.py" windows "$APP_PROCESS" 2>/dev/null; }
 ui_dump() {  # ui_dump NAME [WINDOW] → $OUT/ui-NAME.txt
