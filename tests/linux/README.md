@@ -8,6 +8,7 @@ it, on every distro the website's Linux guide names and both session types:
 | Ubuntu 24.04 | GitHub's Ubuntu 24.04 runner | X11, Wayland |
 | Ubuntu 22.04 | GitHub's Ubuntu 22.04 runner | X11, Wayland |
 | Debian 13 | `debian:trixie` container on an Ubuntu runner | X11, Wayland |
+| Debian 12 | `debian:bookworm` container on an Ubuntu runner | X11, Wayland |
 | Fedora 42 | `fedora:42` container on an Ubuntu runner | X11, Wayland |
 | Arch | `archlinux:latest` container on an Ubuntu runner | X11, Wayland |
 

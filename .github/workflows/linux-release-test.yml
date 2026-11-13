@@ -4,8 +4,8 @@
 # link, dictate into a text box through a virtual microphone with synthetic key presses,
 # and check the auto-updater's files. Scripts and details: tests/linux/README.md.
 #
-# Ubuntu 24.04 and 22.04 run on GitHub's own Ubuntu runners; Debian 13, Fedora 42 and Arch
-# run in containers on an Ubuntu runner, with its /dev (FUSE, input devices).
+# Ubuntu 24.04 and 22.04 run on GitHub's own Ubuntu runners; Debian 13 and 12, Fedora 42
+# and Arch run in containers on an Ubuntu runner, with its /dev (FUSE, input devices).
 #
 # Runs when a release is published, by hand (Run workflow, optional tag; drafts work),
 # and when the test itself changes (a "Test-tag: v0.5.10" line in the commit message
@@ -68,7 +68,7 @@ jobs:
     name: ${{ matrix.name }}
     strategy:
       fail-fast: false
-      max-parallel: 5
+      max-parallel: 6
       matrix:
         include:
           - { name: ubuntu-24.04-x11,     runner: ubuntu-24.04, image: "",                session: x11 }
@@ -77,6 +77,8 @@ jobs:
           - { name: ubuntu-22.04-wayland, runner: ubuntu-22.04, image: "",                session: wayland }
           - { name: debian-13-x11,        runner: ubuntu-24.04, image: "debian:trixie",   session: x11 }
           - { name: debian-13-wayland,    runner: ubuntu-24.04, image: "debian:trixie",   session: wayland }
+          - { name: debian-12-x11,        runner: ubuntu-24.04, image: "debian:bookworm", session: x11 }
+          - { name: debian-12-wayland,    runner: ubuntu-24.04, image: "debian:bookworm", session: wayland }
           - { name: fedora-42-x11,        runner: ubuntu-24.04, image: "fedora:42",       session: x11 }
           - { name: fedora-42-wayland,    runner: ubuntu-24.04, image: "fedora:42",       session: wayland }
           - { name: arch-x11,             runner: ubuntu-24.04, image: "archlinux:latest", session: x11 }
