@@ -297,14 +297,29 @@ def walk(n):
     for c in n.get("nodes", []) + n.get("floating_nodes", []): walk(c)
 walk(json.load(sys.stdin))' 2> /dev/null | head -n 1)
       swaymsg '[title="^Save audio$"] focus' > /dev/null 2>&1; sleep 0.6
-      wtype -s 400 -M ctrl -k a -m ctrl -s 200 "$saved_to"; sleep 0.5
-      # Enter through XTEST (XWayland's own input path for the X window Sway focused):
-      # on Arch the dialog closed after wtype's Return without saving anything, as if
-      # cancelled. Fall back to wtype's Return if the dialog is still open.
-      xdotool key Return; sleep 1.5
-      enter="Enter via xdotool"
-      if swaymsg -t get_tree | grep -q '"Save audio"'; then wtype -k Return; enter="$enter, then wtype's Return"; fi
-      dialog="focused the Save audio dialog ($owner) with Sway, typed the path with wtype, $enter"
+      # A short pause between keys, as a person types: on Arch the path typed at full
+      # speed didn't end up where the dialog saved.
+      wtype -s 400 -M ctrl -k a -m ctrl -s 200 -d 20 "$saved_to"; sleep 0.8
+      # The dialog as typed, cropped to it (a test user's folders and the typed path).
+      rect=$(swaymsg -t get_tree | python3 -c '
+import json, sys
+def walk(n):
+    if n.get("name") == "Save audio":
+        r = n.get("rect") or {}
+        print("%d,%d %dx%d" % (r.get("x", 0), r.get("y", 0), r.get("width", 0), r.get("height", 0)))
+    for c in n.get("nodes", []) + n.get("floating_nodes", []): walk(c)
+walk(json.load(sys.stdin))' 2> /dev/null | head -n 1)
+      mkdir -p "$OUT/screens"
+      [ -n "$rect" ] && with_timeout 10 grim -g "$rect" "$OUT/screens/save-audio-dialog-typed.png" 2> /dev/null
+      # wtype's Return: XTEST (xdotool) doesn't reach XWayland windows under Sway (Fedora's
+      # and Arch's dialogs stayed open after it).
+      wtype -k Return
+      dialog="focused the Save audio dialog ($owner) with Sway, typed the path with wtype, pressed Return"
+      # The app's answer is a 3-second toast: "Audio saved." or "Could not save the audio."
+      # (nothing when cancelled). Its log can't say: release builds silence console.warn.
+      ui_dump save-audio-result
+      toast=$(grep -o -E 'Audio saved\.|Could not save the audio\.|This recording is no longer available\.' "$OUT/ui-save-audio-result.txt" | head -n 1)
+      dialog="$dialog; the app said: ${toast:-nothing (cancelled, or the toast was gone)}"
     elif wait_until 10 xdotool search --name '^Save audio$'; then
       wid=$(xdotool search --name '^Save audio$' | head -n 1)
       xdotool windowactivate --sync "$wid" > /dev/null 2>&1; sleep 0.6
@@ -317,11 +332,10 @@ walk(json.load(sys.stdin))' 2> /dev/null | head -n 1)
     fi
     sleep 3
     if [ "$SESSION" = wayland ] && [ ! -s "$saved_to" ] && swaymsg -t get_tree | grep -q '"Save audio"'; then
-      # Still open with nothing saved (Arch's XWayland, once): try once more through XTEST,
-      # which XWayland delivers to the X window Sway just focused.
+      # Still open with nothing saved: type it once more.
       swaymsg '[title="^Save audio$"] focus' > /dev/null 2>&1; sleep 0.5
-      xdotool key --clearmodifiers ctrl+a; sleep 0.2; xdotool type --delay 20 "$saved_to"; sleep 0.4; xdotool key Return
-      dialog="$dialog; still open, so typed it again with xdotool"
+      wtype -s 300 -M ctrl -k a -m ctrl -s 200 -d 20 "$saved_to"; sleep 0.8; wtype -k Return
+      dialog="$dialog; still open, so typed it again"
       sleep 3
     fi
     if [ -s "$saved_to" ] && [ "$(stat -c %s "$saved_to")" -gt 10000 ]; then
@@ -331,8 +345,10 @@ walk(json.load(sys.stdin))' 2> /dev/null | head -n 1)
       # Any file written since the click, whatever its name (a path typed with the wrong
       # keymap wouldn't end in .wav), outside the app's own folders.
       other=$(find "$HOME" -maxdepth 4 -type f -newer "$OUT/.before-save" -not -path '*/.config/*' -not -path '*/.cache/*' -not -path '*/.local/share/*' 2> /dev/null | head -n 4 | paste -sd' ')
+      wavs=$(find / /tmp -xdev \( -path /proc -o -path /sys -o -path /dev -o -path "$SPEECH_DIR" \) -prune -o -type f -name '*.wav' -newer "$OUT/.before-save" -print 2> /dev/null | sort -u | head -n 3 | paste -sd' ')
+      other="${other:-none}; new .wav files anywhere: ${wavs:-none}; the app's working folder: $( (readlink /proc/$(app_main_pid)/cwd || sudo -n readlink /proc/$(app_main_pid)/cwd) 2> /dev/null)"
       open_now=$( [ "$SESSION" = wayland ] && swaymsg -t get_tree | grep -q '"Save audio"' && echo "; the dialog is still open")
-      record FAIL "Missed item: Save audio writes the recording" "press: $(cut -c1-80 <<< "$pressed"); dialog: $(cut -c1-160 <<< "$dialog"); files written since the click: ${other:-none}$open_now"
+      record FAIL "Missed item: Save audio writes the recording" "press: $(cut -c1-80 <<< "$pressed"); dialog: $(cut -c1-260 <<< "$dialog"); files written since the click: ${other}$open_now"
     fi
     pressed=$(press "Retry")
     retried=""
