@@ -140,14 +140,6 @@ launch_app; sleep 15
 screenshot relaunch-signed-in
 if app_running; then record PASS "Relaunches signed in" "windows: $(app_windows)"
 else record FAIL "Relaunches signed in" "the app exited"; exit 0; fi
-kl=""
-for i in $(seq 1 40); do kl=$(key_listener); [ -n "$kl" ] && break; sleep 0.5; done
-if [ -n "$kl" ]; then
-  record PASS "Key listener running" "$kl"
-else
-  said=$(grep -aiE 'key listener|push-to-talk|keyspy|evdev|/dev/input' "$OUT/app-stderr.log" | tail -n 3 | paste -sd' ' | cut -c1-220)
-  record FAIL "Key listener running" "$( [ "$SESSION" = wayland ] && echo "no /dev/input device open: push-to-talk can't work (is the user in the input group?)" || echo "X11KeyServer not running: push-to-talk can't work"); the app said: ${said:-nothing}"
-fi
 ui_dump home
 
 # --- 4. Dictation -------------------------------------------------------------------
@@ -162,6 +154,16 @@ if judge "Push-to-talk (hold Ctrl+Super) types into the focused app" "$phrase" "
   record INFO "Push-to-talk: keys released → text in the box" "$(( written - RELEASED_AT )) ms"
 fi
 screenshot push-to-talk
+# The key listener starts a while after sign-in (not within 35 s of the relaunch in run 4,
+# yet push-to-talk worked), so look for it once the first dictation has run.
+kl=""
+for i in $(seq 1 10); do kl=$(key_listener); [ -n "$kl" ] && break; sleep 0.5; done
+if [ -n "$kl" ]; then
+  record PASS "Key listener running" "$kl"
+else
+  said=$(grep -aiE 'key listener|push-to-talk|keyspy|evdev|/dev/input' "$OUT/app-stderr.log" | tail -n 3 | paste -sd' ' | cut -c1-220)
+  record FAIL "Key listener running" "$( [ "$SESSION" = wayland ] && echo "no /dev/input device open: push-to-talk can't work (is the user in the input group?)" || echo "X11KeyServer not running: push-to-talk can't work"); the app said: ${said:-nothing}"
+fi
 
 # 4b. Hands-free.
 phrase="Please send the quarterly report to the whole team before Friday afternoon."
@@ -227,7 +229,20 @@ if app_has 'data-missed-action'; then
     pressed=$(press "Save audio")
     sleep 2
     saved_to="$HOME/Documents/BlipAI-saved-by-test.wav"; mkdir -p "$HOME/Documents"
-    dialog=$(with_timeout 40 "$PY" "$here/atspi.py" save-as "$APP_PROCESS" "$saved_to" 2>&1)
+    # GTK's save dialog, titled "Save audio": a person types where to save in its name
+    # box and presses Enter. (The app is an X11 client in both sessions, directly or
+    # through XWayland, so xdotool reaches it; AT-SPI doesn't see GTK's dialog here.)
+    dialog=""
+    if wait_until 10 xdotool search --name '^Save audio$'; then
+      wid=$(xdotool search --name '^Save audio$' | head -n 1)
+      xdotool windowactivate --sync "$wid" > /dev/null 2>&1; sleep 0.6
+      xdotool key --clearmodifiers ctrl+a; sleep 0.2
+      xdotool type --delay 15 "$saved_to"; sleep 0.4
+      xdotool key Return
+      dialog="typed the path into the Save audio dialog and pressed Enter"
+    else
+      dialog=$(with_timeout 40 "$PY" "$here/atspi.py" save-as "$APP_PROCESS" "$saved_to" 2>&1)
+    fi
     sleep 3
     if [ -s "$saved_to" ] && [ "$(stat -c %s "$saved_to")" -gt 10000 ]; then
       record PASS "Missed item: Save audio writes the recording" "$(stat -c %s "$saved_to") bytes ($dialog)"
