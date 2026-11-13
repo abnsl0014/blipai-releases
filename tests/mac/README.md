@@ -1,0 +1,112 @@
+# Mac release test
+
+`.github/workflows/mac-release-test.yml` tests a Blip AI Mac release on one of GitHub's
+Mac runners, the way a user gets it. It downloads the DMG from this repo, installs it,
+launches it, signs in, dictates into TextEdit and quits. It also checks the files the
+auto-updater installs.
+
+It costs nothing: this repo is public, and GitHub doesn't charge for its standard runners,
+Mac included, on public repos.
+
+## When it runs
+
+- **When a release is published here.** That's the moment it becomes "latest" for the
+  updater.
+- **By hand.** Actions → **Mac release test** → **Run workflow**. Enter a tag such as
+  `v0.5.10` to test a draft before you publish it, or leave it empty for the latest release.
+- **When the test itself changes** (`tests/mac/**` or the workflow). A line
+  `Test-tag: v0.5.10` in the commit message makes that run test the given tag (a draft
+  works) instead of the latest release.
+
+## Setup: a test account
+
+Sign-in and dictation need a Blip account. In this repo, go to Settings → Secrets and
+variables → Actions and add:
+
+| Secret | Value |
+|---|---|
+| `BLIP_TEST_EMAIL` | the test account's email |
+| `BLIP_TEST_PASSWORD` | its password |
+
+Use a separate account made only for this, never a real one: the logs and artifacts
+are public. Screenshots taken after sign-in show the account's email, plan and usage, so
+they stay on the runner and aren't uploaded (set `PUBLISH_SIGNED_IN_SCREENSHOTS: 1` in the
+workflow's env to upload them while debugging with a throwaway account). Email addresses
+and tokens are removed from every text file that is uploaded. It needs an
+email and password sign-in, ideally on Pro so repeated runs don't hit the free word limit. Without these secrets,
+sign-in and dictation are skipped with a warning, and everything else still runs.
+
+## What it checks
+
+| Step | Script | Checks |
+|---|---|---|
+| Runner setup | `setup-runner.sh` | A virtual mic (BlackHole) carries speech. Synthetic Fn+Space reaches an event tap. |
+| Release files | `select-release.sh` | Downloads the universal DMG, `latest-mac.yml` and the updater zips. |
+| Update path | `update-from-previous.sh` | Installs the previous release, launches it, and checks that its updater is offered this version. Latest published release only, since the updater never sees drafts. |
+| Install | `install-app.sh` | DMG checksum and Applications shortcut. Version and universal binary. `codesign`, Gatekeeper and the stapled ticket. Mic and Apple Events entitlements and their Info.plist reasons. The `blipai://` scheme. A signed `MacKeyServer`. |
+| Updater files | `verify-release.sh` | `latest-mac.yml` names this version, and the zips it lists are on the release with that size. Downloaded files match its sha512. Each zip holds an app of this version for the right CPU, signed by the same identity as the installed app (what Squirrel.Mac checks before it swaps in an update). Gatekeeper rejecting a zip's app is a warning: updates skip Gatekeeper, but someone opening that zip by hand is blocked. |
+| Permissions | `grant-permissions.sh` | Grants Microphone, Accessibility, Input Monitoring and Automation of System Events, as a person does during onboarding. |
+| The app | `run-app.sh` | See below. |
+| Report | `report.sh` | Writes the job summary, removes tokens and emails from the logs, and fails the job if any check failed. Warnings (real findings that don't break users) don't fail it. |
+
+`run-app.sh` checks, in order:
+
+1. **First launch.** The app launches, stays up and shows onboarding. On the latest release,
+   its update check finds nothing newer.
+2. **Sign-in.** The test account signs in through the `blipai://auth` link, the same link
+   the website opens.
+3. **Relaunch signed in.** The app relaunches and the Fn key listener is running.
+4. **Dictation into TextEdit:**
+   - push-to-talk (hold Fn)
+   - hands-free (Fn+Space to start and stop)
+   - filler words are left out
+   - Esc cancels a hands-free dictation
+   - Paste last transcript (Cmd+Ctrl+V)
+   - system audio is muted while recording and restored after
+   - dictating after the speakers change, and after a new default mic appears (as when
+     AirPods connect), without restarting the app: with Auto-detect it switches to the
+     new mic; with a mic chosen in Settings it keeps that one
+   - on versions that have them (0.5.10+): a silent mic shows "No sound" and its
+     **Open Settings** opens the microphone settings; a dictation whose transcription
+     fails (the transcription servers are blocked for a moment) becomes a **Missed**
+     item whose **Save audio** writes the recording and whose **Retry** transcribes it
+   - the dictations are saved to history
+5. **Quit.** The app quits and its key listener exits with it.
+6. **Session ended (0.5.10+).** With the session ended on the server and an expired
+   token in the app, pressing Fn shows "You're signed out", and **Sign in** starts
+   signing in again.
+
+Not covered, because a runner has no such hardware: the first dictation after the Mac
+wakes from sleep, and real Bluetooth or USB microphones connecting or disconnecting.
+
+The run's summary lists every check. The artifact `mac-release-test-<os>` holds screenshots
+of each stage, the app's text at each stage, and the redacted logs.
+
+## How it stands in for a person
+
+- **Microphone.** BlackHole 2ch is the default input. The test renders each phrase with
+  `say` ahead of time and plays it into BlackHole 2ch with sox. Playing a file starts at
+  once, whereas `say` can take seconds to start talking on a cold runner. The default output
+  is BlackHole 16ch, so Blip's "mute system audio while dictating" mutes that device and not
+  the test's voice.
+- **Which mic the app uses.** Auto-detect prefers a real microphone to a virtual default
+  one. Apple-silicon runners have one, "Apple Virtual Sound Device", which hears nothing,
+  so there the test chooses BlackHole 2ch in the app's settings first, as a user picks a
+  mic. Intel runners have no other mic, so they test Auto-detect.
+- **Keyboard.** `keys.swift` posts Fn, Space, Esc and Cmd+Ctrl+V as HID events, the same
+  events a keyboard produces. MacKeyServer's event tap and Electron's global shortcuts see
+  them as real key presses. The Fn key is set to "Do Nothing" first, as onboarding asks.
+- **Permissions.** A person clicks Allow. The test writes the same rows into the TCC
+  databases, which works because SIP is off on GitHub's Mac images. This is the only step
+  that differs from a real install. The app is launched through LaunchServices, so macOS
+  checks the app's own permissions and entitlements, not the runner's.
+
+## Limits
+
+- It runs on three standard runners: Apple silicon on macOS 15 and 26, and Intel on macOS
+  15. Each is one machine with a synthetic voice. Accents,
+  noisy rooms and real microphones aren't covered.
+- Clicking through onboarding isn't automated. The test signs in through the deep link,
+  then relaunches the app.
+- The logs and artifacts are public. `report.sh` strips tokens and email addresses, and
+  the session is signed out at the end, but don't dictate anything private here.

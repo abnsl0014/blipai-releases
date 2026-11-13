@@ -1,0 +1,403 @@
+# Runs the installed Windows app the way a new user does (mirrors tests/mac/run-app.sh):
+#   1. first launch, signed out: the app starts, stays up and shows onboarding; on the
+#      latest release its update check finds nothing newer
+#   2. sign-in through the blipai://auth link the website opens (test account)
+#   3. relaunch signed in: main window, key listener (WinKeyServer) running
+#   4. dictation into a text box: push-to-talk (hold Ctrl+Win), hands-free
+#      (Ctrl+Win+Space), filler words, Esc to cancel, Paste last transcript
+#      (Shift+Alt+Z), history; and, when the app has them (0.5.10+): the "No sound"
+#      notice and Open Settings, a failed transcription kept as a Missed item with
+#      Save audio and Retry
+#   5. (0.5.10+) the session ends while the app runs: "You're signed out" and Sign in
+#   6. quit; relaunching with the ended session shows sign-in
+. "$PSScriptRoot/lib.ps1"
+New-Item -ItemType File -Force -Path (Join-Path $OUT '.started') | Out-Null
+
+# Public values the app itself ships with: the Supabase project and its publishable key.
+$SUPABASE_URL = if ($env:SUPABASE_URL) { $env:SUPABASE_URL } else { 'https://hqwmccawtepvundsgnil.supabase.co' }
+$SUPABASE_KEY = if ($env:SUPABASE_KEY) { $env:SUPABASE_KEY } else { 'sb_publishable_TCu8hwzGitgxmzCu2rYHiA_6r3MImeD' }
+$repo = if ($env:REPO) { $env:REPO } else { $env:GITHUB_REPOSITORY }
+$asar = Join-Path $env:INSTALL_DIR 'resources\app.asar'
+function App-Has([string]$s) { [bool](Select-String -Path $asar -SimpleMatch -Pattern $s -Quiet) }
+# The key listener: a helper process the app starts from its install folder (keyspy's
+# WinKeyServer.exe). Matched by folder, since the name is the package's to choose.
+function Key-Server-Processes {
+  @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |
+    Where-Object { $_.ExecutablePath -and $_.ExecutablePath -like "$env:INSTALL_DIR*" -and $_.Name -notlike 'Blip-AI*' })
+}
+function Key-Server-Running { [bool](Key-Server-Processes | Where-Object { $_.Name -match 'key' }) }
+function Signed-In { [bool](Config-Value 'authToken') }
+function Ui-Dump([string]$Name) {
+  $file = Join-Path $OUT "ui-$Name.txt"
+  foreach ($try in 1..3) {
+    W uia-text $APP_PROCESS | Set-Content -Path $file
+    if (@(Get-Content $file | Where-Object { $_ -notmatch '^== window' }).Count) { return }
+    Start-Sleep -Seconds 3
+  }
+}
+function Ui-Text([string]$Name) { (Get-Content (Join-Path $OUT "ui-$Name.txt") -ErrorAction SilentlyContinue | Where-Object { $_ -notmatch '^== window' }) -join '|' }
+function Launch { Start-Process -FilePath $env:APP_EXE | Out-Null; Wait-Until 30 { App-Running } }
+function Ptt([string]$Phrase) {   # hold Ctrl+Win, speak, release
+  W keys down ctrl | Out-Null; W keys down win | Out-Null
+  Start-Sleep -Milliseconds 600
+  if ($Phrase) { Speak $Phrase }
+  Start-Sleep -Milliseconds 800
+  W keys up win | Out-Null; W keys up ctrl | Out-Null
+  Watch-Front
+}
+# The windows in front over the next 3 s, while the app transcribes and pastes. When
+# nothing reaches the text box, Judge reports them.
+function Watch-Front {
+  $script:ReleasedAt = Get-Date
+  $seen = New-Object System.Collections.Generic.List[string]
+  foreach ($i in 1..12) {
+    $t = "$(W fg)"
+    if (-not $seen.Contains($t)) { $seen.Add($t) }
+    Start-Sleep -Milliseconds 250
+  }
+  $script:FrontAfterRelease = ($seen | ForEach-Object { "'$_'" }) -join ' then '
+}
+# (Not "History": that is a built-in alias of Get-History, and aliases win over functions.)
+function Get-BlipHistory {   # status, timestamp and text of each history item, newest first
+  $c = App-Config
+  if (-not $c) { return @() }
+  $json = python -c "import json, sys; h = json.load(open(sys.argv[1], encoding='utf-8')).get('transcriptionHistory') or []; print(json.dumps([{'status': r.get('status') or 'ok', 'timestamp': str(r.get('timestamp') or ''), 'text': r.get('text') or ''} for r in h if isinstance(r, dict)]))" $c 2>$null
+  if ($json) { return @($json | ConvertFrom-Json) } else { return @() }
+}
+# Did a real mouse click work on an overlay button, or only a click posted to the window
+# (wtool uia-press --until-gone says which)? Runs 9 on both runners: only the posted one.
+function Record-OverlayClick([string]$Label, [string]$Pressed) {
+  $check = "Overlay's '$Label' button takes a mouse click"
+  $last = ($Pressed -split 'after releasing them: ')[-1]   # the attempt that counted
+  if ($last -match 'pressed "[^"]*" in [^(]*\((second )?mouse click') {
+    Record PASS $check "$($last -replace '^.*\((.*)\)$', '$1')$(if ($last -ne $Pressed) { ' (after the shortcut keys were released; not while they were held)' })"
+  } elseif ($last -match 'two mouse clicks[^;]*: no effect' -and $last -match 'pressed "') {
+    Record FAIL $check "two mouse clicks on it did nothing, then a click posted straight to the window worked: the page handles the click, but the real ones were dropped before it (the overlay window is focusable: false, and Windows asks such a window whether to take a click). Check by hand: click it with a mouse on a Windows PC"
+  } elseif ($Pressed) {
+    Record INFO $check $Pressed
+  }
+}
+function Log-Has([string]$Pattern) { $l = App-Log; $l -and (Select-String -Path $l -Pattern $Pattern -Quiet) }
+function Collect-CrashReports {
+  Get-ChildItem $env:APPDATA -Recurse -Depth 4 -Filter '*.dmp' -ErrorAction SilentlyContinue |
+    Where-Object { $_.FullName -match 'blip' -and $_.LastWriteTime -gt (Get-Item (Join-Path $OUT '.started')).LastWriteTime } |
+    ForEach-Object { Copy-Item $_.FullName $OUT }
+}
+
+# One virtual cable here: whatever plays on the default output comes back on the mic.
+# So before first launch, turn off two of Blip's settings: "mute system audio while
+# dictating" (it would silence the test's voice) and its sound effects (its start chime,
+# at -7 dBFS in run 6, would be heard as the mic picking up sound). Windows paths
+# ignore case, so this is the app's own settings folder.
+$seedDir = Join-Path $env:APPDATA 'Blip-AI'
+New-Item -ItemType Directory -Force -Path $seedDir | Out-Null
+'{"muteSystemAudioDuringDictation": false, "muteSoundEffects": true}' | Set-Content -Path (Join-Path $seedDir 'config.json') -Encoding utf8
+Record INFO 'Settings changed for this runner' 'system audio mute while dictating: off; sound effects: muted. The runner has one virtual audio device, so its speaker plays into its mic'
+
+# --- 1. First launch, signed out ---------------------------------------------------
+if (Launch) { Record PASS 'Launches after install' "pid $((Get-Process -Name $APP_PROCESS | Select-Object -First 1).Id)" }
+else { Record FAIL 'Launches after install' "no $APP_PROCESS process after 30 s"; Collect-CrashReports; exit 0 }
+Start-Sleep -Seconds 15
+Screenshot 'first-launch'
+if (App-Running) { Record PASS 'Stays up on first launch (15 s)' '' } else { Record FAIL 'Stays up on first launch (15 s)' 'the app exited'; Collect-CrashReports; exit 0 }
+$windows = App-Windows
+if ($windows) { Record PASS 'Shows onboarding on first launch' "windows: $windows" } else { Record FAIL 'Shows onboarding on first launch' 'no window' }
+$handler = (Get-ItemProperty 'HKCU:\Software\Classes\blipai\shell\open\command' -ErrorAction SilentlyContinue).'(default)'
+if ($handler -and $handler -like '*Blip-AI.exe*') { Record PASS 'blipai:// link opens the app (after first launch)' $handler }
+else { Record FAIL 'blipai:// link opens the app (after first launch)' "handler: $(if ($handler) { $handler } else { 'none' })" }
+Ui-Dump 'onboarding'
+Record INFO 'Onboarding text' ((Ui-Text 'onboarding').Substring(0, [math]::Min(300, (Ui-Text 'onboarding').Length)))
+
+$log = App-Log
+$update = if ($log) { Select-String -Path $log -Pattern 'Found version|is not available|Error: ' | Select-Object -First 1 } else { $null }
+$latest = gh release view -R $repo --json tagName -q .tagName
+if (-not $update) { Record FAIL 'Update check on launch' "no update check in the app's main.log 15 s after launch (log: $log)" }
+elseif ($env:TAG -eq $latest -and $update.Line -match 'is not available') { Record PASS 'Update check on launch' "up to date: $($update.Line -replace '^.*\] ', '')" }
+elseif ($env:TAG -eq $latest) { Record FAIL 'Update check on launch' $update.Line }
+else { Record INFO 'Update check on launch' $update.Line }
+
+# --- 2. Sign in ---------------------------------------------------------------------
+if (-not $env:BLIP_TEST_EMAIL -or -not $env:BLIP_TEST_PASSWORD) {
+  Record SKIP 'Sign in and dictation' 'add the BLIP_TEST_EMAIL and BLIP_TEST_PASSWORD secrets to test them'
+  Record INFO 'Stopped' "window close, then $(Stop-App)"
+  exit 0
+}
+$body = @{ email = $env:BLIP_TEST_EMAIL; password = $env:BLIP_TEST_PASSWORD } | ConvertTo-Json
+try {
+  $session = Invoke-RestMethod -Method Post -Uri "$SUPABASE_URL/auth/v1/token?grant_type=password" -TimeoutSec 30 `
+    -Headers @{ apikey = $SUPABASE_KEY } -ContentType 'application/json' -Body $body
+} catch { $session = $null; $authError = $_.ErrorDetails.Message }
+if (-not $session.access_token) { Record FAIL 'Test account signs in (Supabase)' "$authError"; Stop-App | Out-Null; exit 0 }
+$access = $session.access_token; $refresh = $session.refresh_token
+Write-Host "::add-mask::$access"
+Write-Host "::add-mask::$refresh"
+Record PASS 'Test account signs in (Supabase)' 'password grant returned a session'
+
+New-Item -ItemType File -Force -Path (Join-Path $OUT '.signed-in') | Out-Null   # screenshots stay private from here
+Start-Process "blipai://auth?token=$access&refresh_token=$refresh"
+if (Wait-Until 45 { Signed-In }) { Record PASS 'Signs in through the blipai://auth link' 'token saved by the app' }
+else { Record FAIL 'Signs in through the blipai://auth link' 'no token saved within 45 s' }
+Start-Sleep -Seconds 3
+Screenshot 'signed-in'
+Ui-Dump 'signed-in'
+
+# --- 3. Relaunch signed in ------------------------------------------------------------
+Record INFO 'Stopped after onboarding' "$(Stop-App)"
+Launch | Out-Null
+Start-Sleep -Seconds 15
+Screenshot 'relaunch-signed-in'
+if (App-Running) { Record PASS 'Relaunches signed in' "windows: $(App-Windows)" } else { Record FAIL 'Relaunches signed in' 'the app exited'; Collect-CrashReports; exit 0 }
+$helpers = { (Key-Server-Processes | ForEach-Object { $_.Name }) -join ', ' }
+$keyProcs = (Get-Process | Where-Object { $_.Name -match 'key' } | ForEach-Object { $_.Name } | Sort-Object -Unique) -join ', '
+Record INFO 'Key listener processes' "$(if ($keyProcs) { $keyProcs } else { 'none found by name' }); the shortcut checks below show whether keys reach the app" 
+Ui-Dump 'home'
+
+# --- 4. Dictation ---------------------------------------------------------------------
+# When the runner's virtual mic hears nothing (setup-runner.ps1's loopback check), every
+# check below would fail for a reason that has nothing to do with the app.
+$micWorks = -not (Select-String -Path $RESULTS -Pattern "^FAIL`tVirtual microphone carries speech" -Quiet)
+if (-not $micWorks) {
+  Record SKIP 'Dictation and microphone notices' "not tested: this runner's virtual mic heard nothing (see 'Virtual microphone carries speech')"
+} else {
+$phrases = @(
+  'The quick brown fox jumps over the lazy dog near the river bank.',
+  'Please send the quarterly report to the whole team before Friday afternoon.',
+  'Um, so I think we should, uh, move the meeting to next week.',
+  'This sentence should never be typed.',
+  'Remember to water the plants on Saturday morning.')
+Render-Speech $phrases
+
+# 4a. Push-to-talk.
+Focus-Target
+$t0 = Get-Date
+Ptt $phrases[0]
+$text = Wait-Text 30
+if (Judge 'Push-to-talk (hold Ctrl+Win) types into the focused app' $phrases[0] $text) {
+  # The text box writes its file when text arrives.
+  Record INFO 'Push-to-talk: keys released -> text in the window' "$([int]((Get-Item $TARGET_FILE).LastWriteTime - $script:ReleasedAt).TotalMilliseconds) ms"
+}
+Screenshot 'push-to-talk'
+
+# 4b. Hands-free.
+Focus-Target
+W keys chord ctrl+win+space | Out-Null
+Start-Sleep -Milliseconds 800; Speak $phrases[1]; Start-Sleep -Milliseconds 800
+W keys chord ctrl+win+space | Out-Null
+Watch-Front
+Judge 'Hands-free (Ctrl+Win+Space to start and stop)' $phrases[1] (Wait-Text 30) | Out-Null
+
+# 4c. Filler words.
+Focus-Target
+Ptt $phrases[2]
+$lastText = Wait-Text 30
+Judge 'Dictation with filler words' 'I think we should move the meeting to next week' $lastText | Out-Null
+if ($lastText) {
+  if ($lastText -match '(?i)\b(um|uh)\b') { Record FAIL 'Filler words left out' "typed: `"$lastText`"" }
+  else { Record PASS 'Filler words left out' "no um/uh in `"$lastText`"" }
+}
+
+# 4d. Esc cancels a hands-free dictation.
+Focus-Target
+W keys chord ctrl+win+space | Out-Null
+Start-Sleep -Milliseconds 800; Speak $phrases[3]
+W keys tap escape | Out-Null
+Start-Sleep -Seconds 10
+if ("$(Target-Text)".Trim()) { Record FAIL 'Esc cancels a hands-free dictation' "typed: `"$(Target-Text)`"" }
+else { Record PASS 'Esc cancels a hands-free dictation' 'nothing typed in 10 s' }
+Start-Sleep -Seconds 2
+
+# 4e. Paste last transcript.
+Focus-Target
+W keys chord shift+alt+z | Out-Null
+$pasted = Wait-Text 15
+if (-not $lastText) { Record SKIP 'Paste last transcript (Shift+Alt+Z)' 'no earlier dictation to paste' }
+else { Judge 'Paste last transcript (Shift+Alt+Z)' $lastText $pasted 90 | Out-Null }
+
+Record SKIP 'Dictates after the speakers or default mic change' 'the Windows runner has one virtual audio device; tested on Mac'
+Record SKIP 'First dictation after the PC wakes from sleep' 'a GitHub runner can''t sleep and wake; check by hand'
+Record SKIP 'Real Bluetooth or USB mic plugged in or out mid-dictation' 'no such hardware on a runner'
+
+# 4g. Failed transcription (before 4h: Open Settings leaves the home window on Settings,
+# where the Missed item's buttons aren't shown): a "Missed" item with Retry and Save audio (0.5.10+).
+if (App-Has 'data-missed-action') {
+  $ips = @('proxy.tryblipai.com', 'api.groq.com' | ForEach-Object { Resolve-DnsName -Name $_ -ErrorAction SilentlyContinue } |
+    Where-Object { $_.IPAddress } | ForEach-Object { $_.IPAddress }) | Sort-Object -Unique
+  $profilesOff = @(Get-NetFirewallProfile | Where-Object { -not $_.Enabled } | ForEach-Object { $_.Name })
+  if ($profilesOff) { Set-NetFirewallProfile -Name $profilesOff -Enabled True }
+  New-NetFirewallRule -DisplayName 'blip-test-block-stt' -Direction Outbound -RemoteAddress $ips -Action Block | Out-Null
+  Record INFO 'Transcription servers blocked' "proxy.tryblipai.com and api.groq.com ($($ips -join ', '))"
+  Focus-Target
+  Ptt $phrases[4]
+  $missed = $null
+  Wait-Until 60 { $n = Get-BlipHistory | Select-Object -First 1; if ($n -and $n.status -eq 'missed') { $script:missed = $n }; [bool]$script:missed } | Out-Null
+  Ui-Dump 'missed-error'
+  Remove-NetFirewallRule -DisplayName 'blip-test-block-stt' -ErrorAction SilentlyContinue
+  if ($profilesOff) { Set-NetFirewallProfile -Name $profilesOff -Enabled False }
+  if ($missed) {
+    Record PASS 'Failed transcription is kept as a Missed item' "overlay: $((Ui-Text 'missed-error') -replace '^(.{0,140}).*$', '$1')"
+    # The test's text box stays on top of every window; move it out of the way so the
+    # Missed item's buttons can be clicked like a person would (Focus-Target restores it).
+    W minimize 'Blip Test Target' | Out-Null
+    Start-Process -FilePath $env:APP_EXE | Out-Null       # brings the main window up
+    Start-Sleep -Seconds 3
+    $before = Get-Date
+    $target = $null
+    $pressed = W uia-press $APP_PROCESS 'Save audio'
+    # Windows' Save dialog: bring it to the front, then Enter (its default button, Save).
+    if (Wait-Until 10 { (App-Windows) -match 'Save audio' }) {
+      W focus 'Save audio' | Out-Null
+      Start-Sleep -Milliseconds 800
+      # Choose where to save, as a person would: a full path in the file name box.
+      $target = Join-Path ([Environment]::GetFolderPath('MyDocuments')) 'BlipAI-saved-by-test.wav'
+      Set-Clipboard -Value $target
+      W keys chord ctrl+a | Out-Null
+      W keys chord ctrl+v | Out-Null
+      Start-Sleep -Milliseconds 300
+      W keys tap return | Out-Null
+      Wait-Until 10 { -not ((App-Windows) -match 'Save audio') } | Out-Null
+    } else {
+      $pressed = "$pressed; no Save dialog appeared"
+    }
+    Start-Sleep -Seconds 3
+    # The app suggests only a file name (BlipAI-<time>.wav), so Windows' dialog picks the
+    # folder: look for that name in the user's folders and the app's install folder.
+    # The copy keeps the recording's modified time (Windows' CopyFile does), so go by when
+    # the file was created.
+    $saved = $null
+    if ($target -and (Test-Path $target)) { $saved = Get-Item $target }
+    if (-not $saved) {
+      $saved = @($env:USERPROFILE, $env:INSTALL_DIR) | Where-Object { $_ } |
+        ForEach-Object { Get-ChildItem -Path $_ -Recurse -Depth 5 -Include 'BlipAI-*.wav', 'BlipAI-*.mp3' -ErrorAction SilentlyContinue } |
+        Where-Object { $_.CreationTime -gt $before } | Select-Object -First 1
+    }
+    if ($saved -and $saved.Length -gt 10000) { Record PASS 'Missed item: Save audio writes the recording' "$($saved.FullName -replace [regex]::Escape($env:USERPROFILE), '~'), $($saved.Length) bytes" }
+    else { Record FAIL 'Missed item: Save audio writes the recording' "press: $pressed; no new BlipAI-*.wav/.mp3 in the user's folders or the app's" }
+    $pressed = W uia-press $APP_PROCESS 'Retry'
+    $retried = $null
+    Wait-Until 60 { $r = Get-BlipHistory | Where-Object { "$($_.timestamp)" -eq "$($missed.timestamp)" } | Select-Object -First 1; if ($r -and $r.status -ne 'missed' -and $r.text) { $script:retried = $r.text }; [bool]$script:retried } | Out-Null
+    if ($retried) { Judge 'Missed item: Retry transcribes it' $phrases[4] $retried | Out-Null }
+    else { Record FAIL 'Missed item: Retry transcribes it' "press: $pressed; still Missed after 60 s" }
+  } else {
+    $n = Get-BlipHistory | Select-Object -First 1
+    $newest = if ($n) { '{0} "{1}"' -f $n.status, $n.text } else { 'none' }
+    Record FAIL 'Failed transcription is kept as a Missed item' "newest history item: $newest; overlay: $(Ui-Text 'missed-error')"
+  }
+} else {
+  Record SKIP 'Failed transcription is kept as a Missed item' 'this version has no Missed items (added in 0.5.10)'
+}
+
+# 4h. Silent microphone: "No sound" notice with "Open Settings" (0.5.10+).
+if (App-Has 'id="status-action"') {
+  Focus-Target
+  W keys down ctrl | Out-Null; W keys down win | Out-Null
+  Start-Sleep -Milliseconds 4500
+  Ui-Dump 'no-sound'
+  $pattern = "(?i)no sound|can.t hear|couldn.t hear|is muted"
+  if (-not ((Get-Content (Join-Path $OUT 'ui-no-sound.txt')) -match $pattern)) {
+    Start-Sleep -Seconds 4      # the virtual cable's silence may not be digital zero: "Can't hear you" comes at 6 s
+    Ui-Dump 'no-sound'
+  }
+  Screenshot 'no-sound'
+  $notice = (Get-Content (Join-Path $OUT 'ui-no-sound.txt')) -match $pattern | Select-Object -First 1
+  if ($notice) { Record PASS 'Silent mic: ''No sound'' notice' $notice } else { Record FAIL 'Silent mic: ''No sound'' notice' "overlay showed: $(Ui-Text 'no-sound')" }
+  $pressed = W uia-press $APP_PROCESS 'Open Settings' --until-gone
+  W keys up win | Out-Null; W keys up ctrl | Out-Null
+  if ("$pressed" -notlike 'pressed*') {   # once more with the keys up (the notice stays 8 s)
+    Start-Sleep -Milliseconds 500
+    $pressed = "while holding the keys: $pressed; after releasing them: $(W uia-press $APP_PROCESS 'Open Settings' --until-gone)"
+  }
+  Start-Sleep -Seconds 3
+  Ui-Dump 'open-settings'
+  Record-OverlayClick 'Open Settings' "$pressed"
+  # The app logs "[mic] open-settings from=overlay" when the button is used.
+  if ("$pressed" -match 'pressed "' -and ((Log-Has 'open-settings from=overlay') -or (Ui-Text 'open-settings') -match '(?i)test microphone')) { Record PASS '''Open Settings'' opens the microphone settings' "$pressed" }
+  else { Record FAIL '''Open Settings'' opens the microphone settings' "press: $pressed; the app didn't log it; windows: $(App-Windows); overlay after: $((Ui-Text 'open-settings') -replace '\|Blip AI\|.*$', '')" }
+  if ("$(Target-Text)".Trim()) { Record FAIL 'Silent dictation types nothing' "typed: `"$(Target-Text)`"" } else { Record PASS 'Silent dictation types nothing' '' }
+  W keys tap escape | Out-Null
+} else {
+  Record SKIP 'Silent mic: ''No sound'' notice' 'this version has no microphone notices (added in 0.5.10)'
+}
+
+# History.
+$all = (Get-BlipHistory | ForEach-Object { $_.text }) -join ' '
+if ($all -match '(?i)quick brown fox' -and $all -match '(?i)quarterly report') { Record PASS 'Dictations saved to history' "$(@(Get-BlipHistory).Count) entries, including the push-to-talk and hands-free ones" }
+else {
+  $stores = python -c "import glob, json, os; [print(p, len(json.load(open(p, encoding='utf-8')).get('transcriptionHistory') or []), sorted(json.load(open(p, encoding='utf-8')).keys())[:12]) for p in glob.glob(os.path.join(os.environ['APPDATA'], '*', '**', 'config.json'), recursive=True) if 'blip' in p.lower()]" 2>&1
+  Record FAIL 'Dictations saved to history' "$(@(Get-BlipHistory).Count) entries read from $(App-Config). Stores: $($stores -join ' / ')"
+}
+$log = App-Log
+if ($log) { Select-String -Path $log -Pattern '\[(stt|paste)-timing\]' | ForEach-Object { $_.Line } | Set-Content (Join-Path $OUT 'dictation-timing.txt') }
+}   # $micWorks
+
+# --- 5. The session ends while the app runs: "Sign in" notice (0.5.10+) ---------
+# End this session on the server (scope=local: only this runner's session), then give
+# the running app an expired access token, as after a long sleep. electron-store reads
+# its file on every access, so the app sees it at the next shortcut press.
+try { Invoke-RestMethod -Method Post -Uri "$SUPABASE_URL/auth/v1/logout?scope=local" -TimeoutSec 30 -Headers @{ apikey = $SUPABASE_KEY; Authorization = "Bearer $access" } | Out-Null } catch { }
+$hasSignInNotice = App-Has 'id="status-action"'
+if ($hasSignInNotice -and -not $micWorks) {
+  Record SKIP "Session ended: 'You're signed out' notice" "not tested: with no working mic the app shows 'No microphone found' first"
+} elseif ($hasSignInNotice) {
+  python -c "import base64, json, sys, time
+p = sys.argv[1]; cfg = json.load(open(p, encoding='utf-8'))
+b64 = lambda d: base64.urlsafe_b64encode(json.dumps(d).encode()).rstrip(b'=').decode()
+try:
+    part = (cfg.get('authToken') or '').split('.')[1]; payload = json.loads(base64.urlsafe_b64decode(part + '=' * (-len(part) % 4)))
+except Exception:
+    payload = {}
+payload['exp'] = int(time.time()) - 3600
+cfg['authToken'] = b64({'alg': 'HS256', 'typ': 'JWT'}) + '.' + b64(payload) + '.expired'
+json.dump(cfg, open(p, 'w', encoding='utf-8'))" (App-Config)
+  Focus-Target
+  W keys down ctrl | Out-Null; W keys down win | Out-Null
+  Start-Sleep -Milliseconds 2500
+  # The notice shows for about 8 s: press its button as soon as it is seen.
+  $pressed = ''
+  Ui-Dump 'signed-out'
+  $notice = @(Get-Content (Join-Path $OUT 'ui-signed-out.txt') -ErrorAction SilentlyContinue) -match '(?i)signed out|sign in to keep' | Select-Object -First 1
+  if ($notice) { $pressed = W uia-press $APP_PROCESS 'Sign in' --until-gone }
+  W keys up win | Out-Null; W keys up ctrl | Out-Null
+  if (-not $notice) {   # shown at release instead
+    Start-Sleep -Seconds 1
+    Ui-Dump 'signed-out-after'
+    $notice = @(Get-Content (Join-Path $OUT 'ui-signed-out-after.txt') -ErrorAction SilentlyContinue) -match '(?i)signed out|sign in to keep' | Select-Object -First 1
+    if ($notice) { $pressed = W uia-press $APP_PROCESS 'Sign in' --until-gone }
+  } elseif ("$pressed" -notlike 'pressed*') {   # once more with the keys up
+    Start-Sleep -Milliseconds 500
+    $pressed = "while holding the keys: $pressed; after releasing them: $(W uia-press $APP_PROCESS 'Sign in' --until-gone)"
+  }
+  if ($notice) {
+    Record PASS "Session ended: 'You're signed out' notice" $notice
+    Record-OverlayClick 'Sign in' "$pressed"
+    Start-Sleep -Seconds 6
+    # The app logs "[auth] sign-in started from=overlay" and opens its sign-in window.
+    if ("$pressed" -match 'pressed "' -and ((Log-Has 'sign-in started') -or (App-Windows) -match '(?i)welcome|sign')) { Record PASS "'Sign in' starts signing in again" "$pressed; windows: $(App-Windows)" }
+    else { Ui-Dump 'after-sign-in-press'; Record FAIL "'Sign in' starts signing in again" "press: $pressed; the app didn't log it; windows: $(App-Windows); overlay after: $((Ui-Text 'after-sign-in-press') -replace '\|Blip AI\|.*$', '')" }
+  } else {
+    Record FAIL "Session ended: 'You're signed out' notice" "windows: $(App-Windows); text: $(Ui-Text 'signed-out')"
+  }
+  if ("$(Target-Text)".Trim()) { Record FAIL 'Signed out: nothing is typed' "typed: $(Target-Text)" }
+} else {
+  Record SKIP "Session ended: 'You're signed out' notice" 'this version has no sign-in notice (added in 0.5.10)'
+}
+
+# --- 6. Quit ------------------------------------------------------------------------
+$how = Stop-App
+Record INFO 'Stopped' "$how (closing the window keeps Blip in the tray)"
+Start-Sleep -Seconds 5
+if (Key-Server-Running) {
+  Record WARN 'Key listener exits with the app' "WinKeyServer still running 5 s after the app was $how"
+  Key-Server-Processes | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
+} else { Record PASS 'Key listener exits with the app' "after the app was $how" }
+Collect-CrashReports
+Copy-Item "$TARGET_FILE.events" (Join-Path $OUT 'target-box-events.txt') -ErrorAction SilentlyContinue
+
+# Relaunching with that ended session asks the user to sign in again.
+if ($hasSignInNotice) {
+  Launch | Out-Null
+  Start-Sleep -Seconds 15
+  if ((App-Windows) -match '(?i)welcome') { Record PASS 'Relaunch with an ended session shows sign-in' "windows: $(App-Windows)" }
+  else { Record FAIL 'Relaunch with an ended session shows sign-in' "windows: $(App-Windows)" }
+  Stop-App | Out-Null
+}
+exit 0

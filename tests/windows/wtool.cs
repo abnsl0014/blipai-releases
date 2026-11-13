@@ -1,0 +1,422 @@
+// Windows helper for the release test, built on the runner with the .NET Framework
+// compiler (C# 5): see setup-runner.ps1. One exe, several commands:
+//
+//   wtool keys down|up|tap NAME     press or release a key the way a keyboard does (SendInput)
+//   wtool keys chord ctrl+win+space press keys in order, release in reverse
+//   wtool watch SECONDS             print key events a low-level keyboard hook sees
+//   wtool target FILE               a window with a text box; its text is mirrored to FILE.
+//                                   FILE.clear (created by the test) empties it.
+//   wtool focus TITLE               bring the window with that title to the front
+//   wtool minimize TITLE            minimize the window with that title
+//   wtool fg                        title of the window in front
+//   wtool windows PROCESS           visible top-level window titles of a process
+//   wtool uia-text PROCESS          the text of every element in the process's windows
+//   wtool uia-press PROCESS LABEL [--until-gone]
+//                                   click the first button whose name contains LABEL
+//   wtool screenshot FILE           PNG of the whole screen
+//   wtool speak-file FILE TEXT      synthesize TEXT (Windows' built-in voice) to a WAV file
+//   wtool play FILE                 play a WAV on the default output and wait until it ends
+using System;
+using System.Collections.Generic;
+using System.Diagnostics;
+using System.Drawing;
+using System.Drawing.Imaging;
+using System.IO;
+using System.Runtime.InteropServices;
+using System.Text;
+using System.Threading;
+using System.Windows.Automation;
+using System.Windows.Forms;
+
+static class WTool
+{
+    // ---- keyboard ---------------------------------------------------------------
+    [StructLayout(LayoutKind.Sequential)]
+    struct KEYBDINPUT { public ushort wVk; public ushort wScan; public uint dwFlags; public uint time; public IntPtr dwExtraInfo; }
+    [StructLayout(LayoutKind.Explicit)]
+    struct INPUTUNION { [FieldOffset(0)] public KEYBDINPUT ki; [FieldOffset(0)] public MOUSEINPUT mi; }
+    [StructLayout(LayoutKind.Sequential)]
+    struct MOUSEINPUT { public int dx; public int dy; public uint mouseData; public uint dwFlags; public uint time; public IntPtr dwExtraInfo; }
+    [StructLayout(LayoutKind.Sequential)]
+    struct INPUT { public uint type; public INPUTUNION u; }
+    [DllImport("user32.dll", SetLastError = true)] static extern uint SendInput(uint n, INPUT[] inputs, int size);
+    [DllImport("user32.dll")] static extern uint MapVirtualKey(uint code, uint mapType);
+
+    const uint KEYEVENTF_EXTENDEDKEY = 0x1, KEYEVENTF_KEYUP = 0x2;
+    static readonly Dictionary<string, ushort> Vk = new Dictionary<string, ushort> {
+        { "ctrl", 0xA2 }, { "win", 0x5B }, { "shift", 0xA0 }, { "alt", 0xA4 },
+        { "space", 0x20 }, { "escape", 0x1B }, { "return", 0x0D }, { "tab", 0x09 },
+        { "a", 0x41 }, { "v", 0x56 }, { "z", 0x5A }, { "delete", 0x2E },
+    };
+
+    static void Key(string name, bool down)
+    {
+        ushort vk;
+        if (!Vk.TryGetValue(name, out vk)) throw new ArgumentException("unknown key: " + name);
+        var input = new INPUT { type = 1 };
+        input.u.ki.wVk = vk;
+        input.u.ki.wScan = (ushort)MapVirtualKey(vk, 0);
+        input.u.ki.dwFlags = (down ? 0 : KEYEVENTF_KEYUP) | (vk == 0x5B ? KEYEVENTF_EXTENDEDKEY : 0);
+        if (SendInput(1, new[] { input }, Marshal.SizeOf(typeof(INPUT))) != 1)
+            throw new Exception("SendInput failed: " + Marshal.GetLastWin32Error());
+        Thread.Sleep(40);
+    }
+
+    // ---- low-level keyboard hook (what Blip's key listener uses) -----------------
+    delegate IntPtr HookProc(int code, IntPtr wParam, IntPtr lParam);
+    [DllImport("user32.dll")] static extern IntPtr SetWindowsHookEx(int id, HookProc proc, IntPtr mod, uint thread);
+    [DllImport("user32.dll")] static extern IntPtr CallNextHookEx(IntPtr hook, int code, IntPtr wParam, IntPtr lParam);
+    [DllImport("kernel32.dll")] static extern IntPtr GetModuleHandle(string name);
+    static HookProc keepAlive;
+
+    static void Watch(double seconds)
+    {
+        keepAlive = (code, wParam, lParam) => {
+            if (code >= 0) {
+                int vk = Marshal.ReadInt32(lParam);
+                int flags = Marshal.ReadInt32(lParam, 8);
+                Console.WriteLine("event msg=0x" + wParam.ToInt32().ToString("x") + " vk=0x" + vk.ToString("x") + " injected=" + ((flags & 0x10) != 0));
+            }
+            return CallNextHookEx(IntPtr.Zero, code, wParam, lParam);
+        };
+        if (SetWindowsHookEx(13, keepAlive, GetModuleHandle(null), 0) == IntPtr.Zero) { Console.WriteLine("HOOK_FAILED"); Environment.Exit(3); }
+        Console.WriteLine("HOOK_READY");
+        var timer = new System.Windows.Forms.Timer { Interval = (int)(seconds * 1000) };
+        timer.Tick += (s, e) => Application.Exit();
+        timer.Start();
+        Application.Run();
+    }
+
+    // ---- target window -------------------------------------------------------------
+    // The text box ignores the window menu that a lone Alt opens (Focus presses Alt to be
+    // allowed to change the front window; if the box is in front already, the Alt reaches
+    // it and its next Ctrl+V goes to the window menu, not the text).
+    class TargetForm : Form
+    {
+        public Action<string> Note = delegate { };
+        protected override void WndProc(ref Message m)
+        {
+            if (m.Msg == 0x0112 && (m.WParam.ToInt64() & 0xFFF0) == 0xF100) { Note("window menu (Alt) ignored"); return; }
+            base.WndProc(ref m);
+        }
+    }
+
+    static void Target(string file)
+    {
+        // FILE.events: each key, focus change and text change the box gets (not the text).
+        Action<string> note = msg => {
+            try { File.AppendAllText(file + ".events", DateTime.Now.ToString("HH:mm:ss.fff") + " " + msg + Environment.NewLine); } catch { }
+        };
+        var form = new TargetForm { Text = "Blip Test Target", Width = 900, Height = 500, TopMost = true, StartPosition = FormStartPosition.CenterScreen };
+        form.Note = note;
+        var box = new TextBox { Multiline = true, Dock = DockStyle.Fill, Font = new Font("Segoe UI", 14) };
+        form.Controls.Add(box);
+        File.WriteAllText(file, "");
+        box.TextChanged += (s, e) => { try { File.WriteAllText(file, box.Text); } catch { } note("text now " + box.TextLength + " chars"); };
+        box.KeyDown += (s, e) => note("key " + (e.Control ? "ctrl+" : "") + (e.Alt ? "alt+" : "") + (e.Shift ? "shift+" : "") + e.KeyCode);
+        form.Activated += (s, e) => note("window activated");
+        form.Deactivate += (s, e) => note("window deactivated");
+        box.GotFocus += (s, e) => note("box focused");
+        box.LostFocus += (s, e) => note("box lost focus");
+        var timer = new System.Windows.Forms.Timer { Interval = 200 };
+        timer.Tick += (s, e) => {
+            if (File.Exists(file + ".clear")) {
+                try { File.Delete(file + ".clear"); } catch { }
+                box.Clear();
+                form.Activate();
+                box.Focus();
+            }
+        };
+        timer.Start();
+        form.Shown += (s, e) => { form.Activate(); box.Focus(); };
+        Application.Run(form);
+    }
+
+    // ---- windows and focus ---------------------------------------------------------
+    delegate bool EnumProc(IntPtr hwnd, IntPtr lParam);
+    [DllImport("user32.dll")] static extern bool EnumWindows(EnumProc proc, IntPtr lParam);
+    [DllImport("user32.dll")] static extern bool IsWindowVisible(IntPtr hwnd);
+    [DllImport("user32.dll")] static extern int GetWindowText(IntPtr hwnd, StringBuilder text, int max);
+    [DllImport("user32.dll")] static extern uint GetWindowThreadProcessId(IntPtr hwnd, out uint pid);
+    [DllImport("user32.dll")] static extern bool SetForegroundWindow(IntPtr hwnd);
+    [DllImport("user32.dll")] static extern bool ShowWindow(IntPtr hwnd, int cmd);
+    [DllImport("user32.dll")] static extern IntPtr GetForegroundWindow();
+    [DllImport("user32.dll")] static extern bool AttachThreadInput(uint a, uint b, bool attach);
+    [DllImport("kernel32.dll")] static extern uint GetCurrentThreadId();
+    [DllImport("user32.dll")] static extern void keybd_event(byte vk, byte scan, uint flags, IntPtr extra);
+
+    static List<KeyValuePair<IntPtr, string>> TopWindows(HashSet<uint> pids)
+    {
+        var found = new List<KeyValuePair<IntPtr, string>>();
+        EnumWindows((hwnd, l) => {
+            uint pid; GetWindowThreadProcessId(hwnd, out pid);
+            if ((pids == null || pids.Contains(pid)) && IsWindowVisible(hwnd)) {
+                var sb = new StringBuilder(512); GetWindowText(hwnd, sb, 512);
+                if (sb.Length > 0) found.Add(new KeyValuePair<IntPtr, string>(hwnd, sb.ToString()));
+            }
+            return true;
+        }, IntPtr.Zero);
+        return found;
+    }
+
+    static HashSet<uint> Pids(string process)
+    {
+        var set = new HashSet<uint>();
+        foreach (var p in Process.GetProcessesByName(process)) set.Add((uint)p.Id);
+        return set;
+    }
+
+    static bool BringToFront(IntPtr hwnd)
+    {
+        uint pid;
+        uint fg = GetWindowThreadProcessId(GetForegroundWindow(), out pid);
+        uint me = GetCurrentThreadId();
+        keybd_event(0xA4, 0, 0, IntPtr.Zero); keybd_event(0xA4, 0, 2, IntPtr.Zero); // Alt lifts the foreground lock
+        AttachThreadInput(me, fg, true);
+        ShowWindow(hwnd, 9);
+        bool ok = SetForegroundWindow(hwnd);
+        AttachThreadInput(me, fg, false);
+        return ok;
+    }
+
+    static void Minimize(string title)
+    {
+        foreach (var w in TopWindows(null)) {
+            if (w.Value.IndexOf(title, StringComparison.OrdinalIgnoreCase) < 0) continue;
+            ShowWindow(w.Key, 6);   // SW_MINIMIZE
+            Console.WriteLine("minimized " + w.Value);
+            return;
+        }
+        Console.WriteLine("no window titled " + title);
+    }
+
+    static void Focus(string title)
+    {
+        foreach (var w in TopWindows(null)) {
+            if (w.Value.IndexOf(title, StringComparison.OrdinalIgnoreCase) < 0) continue;
+            if (GetForegroundWindow() == w.Key) { Console.WriteLine("already in front: " + w.Value); return; }
+            bool ok = BringToFront(w.Key);
+            Console.WriteLine((ok ? "focused " : "focus refused ") + w.Value);
+            return;
+        }
+        Console.WriteLine("no window titled " + title); Environment.Exit(2);
+    }
+
+    // ---- mouse -----------------------------------------------------------------------
+    [StructLayout(LayoutKind.Sequential)] struct POINT { public int X; public int Y; }
+    [DllImport("user32.dll")] static extern bool SetCursorPos(int x, int y);
+    [DllImport("user32.dll")] static extern IntPtr WindowFromPoint(POINT p);
+    [DllImport("user32.dll")] static extern IntPtr GetAncestor(IntPtr hwnd, uint flags);
+    [DllImport("user32.dll")] static extern bool SetProcessDPIAware();
+    const uint MOUSEEVENTF_LEFTDOWN = 0x2, MOUSEEVENTF_LEFTUP = 0x4, GA_ROOT = 2;
+
+    static IntPtr TopWindowAt(POINT p) { return GetAncestor(WindowFromPoint(p), GA_ROOT); }
+
+    const uint MOUSEEVENTF_MOVE = 0x1, MOUSEEVENTF_ABSOLUTE = 0x8000;
+
+    static void Mouse(uint flags, POINT p)
+    {
+        var screen = Screen.PrimaryScreen.Bounds;
+        var input = new INPUT { type = 0 };
+        input.u.mi.dx = (int)((p.X * 65535L) / Math.Max(1, screen.Width - 1));
+        input.u.mi.dy = (int)((p.Y * 65535L) / Math.Max(1, screen.Height - 1));
+        input.u.mi.dwFlags = flags | MOUSEEVENTF_ABSOLUTE;
+        SendInput(1, new[] { input }, Marshal.SizeOf(typeof(INPUT)));
+    }
+
+    // Like a hand: the pointer moves onto the button (the page sees it enter and hover),
+    // rests, then presses and releases.
+    static void Click(POINT p)
+    {
+        for (int i = 6; i >= 0; i--) {
+            Mouse(MOUSEEVENTF_MOVE, new POINT { X = p.X - 8 * i, Y = p.Y });
+            Thread.Sleep(40);
+        }
+        Thread.Sleep(250);
+        Mouse(MOUSEEVENTF_LEFTDOWN, p);
+        Thread.Sleep(80);
+        Mouse(MOUSEEVENTF_LEFTUP, p);
+        Thread.Sleep(150);
+    }
+
+    // ---- UI Automation (Electron exposes its page through it) ----------------------
+    static IEnumerable<AutomationElement> Roots(string process)
+    {
+        var pids = Pids(process);
+        foreach (var w in TopWindows(pids)) {
+            AutomationElement el = null;
+            try { el = AutomationElement.FromHandle(w.Key); } catch { }
+            if (el != null) yield return el;
+        }
+    }
+
+    static void UiaText(string process)
+    {
+        foreach (var root in Roots(process)) {
+            Console.WriteLine("== window: " + root.Current.Name);
+            AutomationElementCollection all;
+            try { all = root.FindAll(TreeScope.Descendants, Condition.TrueCondition); } catch { continue; }
+            foreach (AutomationElement e in all) {
+                string text = "";
+                try { text = e.Current.Name; } catch { }
+                if (string.IsNullOrEmpty(text)) {
+                    object vp;
+                    if (e.TryGetCurrentPattern(ValuePattern.Pattern, out vp)) { try { text = ((ValuePattern)vp).Current.Value; } catch { } }
+                }
+                if (!string.IsNullOrEmpty(text)) Console.WriteLine(text);
+            }
+        }
+    }
+
+    [DllImport("user32.dll")] static extern bool PostMessage(IntPtr hwnd, uint msg, IntPtr w, IntPtr l);
+    [DllImport("user32.dll")] static extern bool ScreenToClient(IntPtr hwnd, ref POINT p);
+
+    // The same click posted straight to the window: it skips Windows' mouse-activation step
+    // (WM_MOUSEACTIVATE), where a window that can't be activated may drop the click.
+    static void PostClick(IntPtr hwnd, POINT screen)
+    {
+        var c = screen;
+        ScreenToClient(hwnd, ref c);
+        var lp = new IntPtr(((c.Y & 0xFFFF) << 16) | (c.X & 0xFFFF));
+        PostMessage(hwnd, 0x0200, IntPtr.Zero, lp);          // WM_MOUSEMOVE
+        Thread.Sleep(100);
+        PostMessage(hwnd, 0x0201, new IntPtr(1), lp);        // WM_LBUTTONDOWN, MK_LBUTTON
+        Thread.Sleep(80);
+        PostMessage(hwnd, 0x0202, IntPtr.Zero, lp);          // WM_LBUTTONUP
+    }
+
+    static readonly Condition EnabledButtons = new AndCondition(
+        new PropertyCondition(AutomationElement.ControlTypeProperty, ControlType.Button),
+        new PropertyCondition(AutomationElement.IsEnabledProperty, true));
+
+    static AutomationElement FindButton(AutomationElement root, string label)
+    {
+        AutomationElementCollection all;
+        try { all = root.FindAll(TreeScope.Descendants, EnabledButtons); } catch { return null; }
+        foreach (AutomationElement b in all) {
+            string name = "";
+            try { name = b.Current.Name ?? ""; } catch { }
+            if (name.IndexOf(label, StringComparison.OrdinalIgnoreCase) >= 0) return b;
+        }
+        return null;
+    }
+
+    static bool StillShown(AutomationElement root, string label)
+    {
+        var b = FindButton(root, label);
+        if (b == null) return false;
+        try { return !b.Current.IsOffscreen; } catch { return false; }
+    }
+
+    // Presses a button as a person does: brings its window to the front if something
+    // covers it, then clicks its middle with the mouse; UI Automation's Invoke when it
+    // can't be reached. With --until-gone (for buttons that go away when used, like the
+    // overlay's), each way is checked and the next is tried if the button is still there:
+    // mouse click, posted click, Invoke. The output says which worked, or "no effect: …".
+    static void UiaPress(string process, string label, bool untilGone)
+    {
+        SetProcessDPIAware();   // UI Automation reports physical pixels
+        foreach (var root in Roots(process)) {
+            var b = FindButton(root, label);
+            if (b == null) continue;
+            string name = "", where = "";
+            try { name = b.Current.Name; where = root.Current.Name; } catch { }
+            var top = new IntPtr(root.Current.NativeWindowHandle);
+            var tried = new List<string>();
+            var r = System.Windows.Rect.Empty;
+            try { r = b.Current.BoundingRectangle; } catch { }
+            if (!r.IsEmpty && r.Width > 1 && r.Height > 1) {
+                var p = new POINT { X = (int)(r.X + r.Width / 2), Y = (int)(r.Y + r.Height / 2) };
+                if (TopWindowAt(p) != top) { BringToFront(top); Thread.Sleep(400); }
+                if (TopWindowAt(p) == top) {
+                    string under = "?";
+                    try {
+                        var e = AutomationElement.FromPoint(new System.Windows.Point(p.X, p.Y));
+                        under = e.Current.ControlType.ProgrammaticName.Replace("ControlType.", "") + " '" + e.Current.Name + "'";
+                    } catch { }
+                    Click(p);
+                    string how = "mouse click at " + p.X + "," + p.Y + " on " + under;
+                    if (!untilGone) { Console.WriteLine("pressed \"" + name + "\" in " + where + " (" + how + ")"); return; }
+                    Thread.Sleep(1500);
+                    if (!StillShown(root, label)) { Console.WriteLine("pressed \"" + name + "\" in " + where + " (" + how + ")"); return; }
+                    Click(p);   // a person clicks again when nothing happens
+                    Thread.Sleep(1500);
+                    if (!StillShown(root, label)) { Console.WriteLine("pressed \"" + name + "\" in " + where + " (second " + how + "; the first did nothing)"); return; }
+                    tried.Add("two mouse clicks at " + p.X + "," + p.Y + " on " + under + ": no effect");
+                    PostClick(top, p);
+                    Thread.Sleep(1500);
+                    if (!StillShown(root, label)) { Console.WriteLine("pressed \"" + name + "\" in " + where + " (posted click; " + string.Join("; ", tried) + ")"); return; }
+                    tried.Add("posted click: no effect");
+                } else {
+                    tried.Add("another window covers it");
+                }
+            }
+            object ip;
+            if (b.TryGetCurrentPattern(InvokePattern.Pattern, out ip)) {
+                ((InvokePattern)ip).Invoke();
+                if (!untilGone) { Console.WriteLine("pressed \"" + name + "\" in " + where + " (UI Automation Invoke; " + string.Join("; ", tried) + ")"); return; }
+                Thread.Sleep(1500);
+                if (!StillShown(root, label)) { Console.WriteLine("pressed \"" + name + "\" in " + where + " (UI Automation Invoke; " + string.Join("; ", tried) + ")"); return; }
+                tried.Add("UI Automation Invoke: no effect");
+            }
+            Console.WriteLine("no effect: \"" + name + "\" in " + where + " stayed after " + string.Join("; ", tried));
+            return;
+        }
+        Console.WriteLine("no button \"" + label + "\" in " + process); Environment.Exit(2);
+    }
+
+    static void Screenshot(string file)
+    {
+        var bounds = SystemInformation.VirtualScreen;
+        using (var bmp = new Bitmap(bounds.Width, bounds.Height))
+        using (var g = Graphics.FromImage(bmp)) {
+            g.CopyFromScreen(bounds.Left, bounds.Top, 0, 0, bounds.Size);
+            bmp.Save(file, ImageFormat.Png);
+        }
+    }
+
+    [STAThread]
+    static int Main(string[] a)
+    {
+        try {
+            string cmd = a.Length > 0 ? a[0] : "";
+            if (cmd == "keys" && a.Length == 3) {
+                if (a[1] == "down") Key(a[2], true);
+                else if (a[1] == "up") Key(a[2], false);
+                else if (a[1] == "tap") { Key(a[2], true); Key(a[2], false); }
+                else if (a[1] == "chord") {
+                    var names = a[2].Split('+');
+                    foreach (var n in names) Key(n, true);
+                    Thread.Sleep(80);
+                    for (int i = names.Length - 1; i >= 0; i--) Key(names[i], false);
+                } else throw new ArgumentException("keys down|up|tap|chord");
+            }
+            else if (cmd == "watch" && a.Length == 2) Watch(double.Parse(a[1]));
+            else if (cmd == "target" && a.Length == 2) Target(a[1]);
+            else if (cmd == "focus" && a.Length == 2) Focus(a[1]);
+            else if (cmd == "fg" && a.Length == 1) {
+                var sb = new StringBuilder(512); GetWindowText(GetForegroundWindow(), sb, 512);
+                Console.WriteLine(sb.ToString());
+            }
+            else if (cmd == "windows" && a.Length == 2) { foreach (var w in TopWindows(Pids(a[1]))) Console.WriteLine(w.Value); }
+            else if (cmd == "uia-text" && a.Length == 2) UiaText(a[1]);
+            else if (cmd == "minimize" && a.Length == 2) Minimize(a[1]);
+            else if (cmd == "uia-press" && (a.Length == 3 || (a.Length == 4 && a[3] == "--until-gone"))) UiaPress(a[1], a[2], a.Length == 4);
+            else if (cmd == "screenshot" && a.Length == 2) Screenshot(a[1]);
+            else if (cmd == "speak-file" && a.Length == 3) {
+                using (var s = new System.Speech.Synthesis.SpeechSynthesizer()) {
+                    s.SetOutputToWaveFile(a[1]);
+                    s.Speak(a[2]);
+                }
+            }
+            else if (cmd == "play" && a.Length == 2) {
+                using (var p = new System.Media.SoundPlayer(a[1])) p.PlaySync();
+            }
+            else { Console.Error.WriteLine("usage: see the header of wtool.cs"); return 2; }
+            return 0;
+        } catch (Exception e) {
+            Console.Error.WriteLine(e.Message);
+            return 1;
+        }
+    }
+}
