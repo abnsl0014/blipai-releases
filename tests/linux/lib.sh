@@ -127,8 +127,17 @@ launch_app() {  # launch_app [ARGS...]
   fi
   wait_until 40 app_running
 }
-quit_app() {  # SIGTERM: what a logout or `systemctl stop` sends; the app quits through app.quit()
-  pkill -TERM -x "$APP_PROCESS" 2>/dev/null
+app_main_pid() {  # the app's main process: the blip-ai that isn't one of Chromium's --type= helpers
+  local pid
+  for pid in $(pgrep -x "$APP_PROCESS"); do
+    tr '\0' ' ' < "/proc/$pid/cmdline" 2>/dev/null | grep -q -- '--type=' || { echo "$pid"; return; }
+  done
+}
+quit_app() {  # SIGTERM to the main process, as a logout or `systemctl stop` sends; the app
+  # quits through app.quit() and closes its helpers itself. (Signalling every blip-ai
+  # process kills Chromium's GPU and network helpers under it, and it aborts.)
+  local pid; pid=$(app_main_pid)
+  [ -n "$pid" ] && kill -TERM "$pid" 2>/dev/null
   wait_until 20 bash -c "! pgrep -x '$APP_PROCESS' > /dev/null"
 }
 app_windows() { with_timeout 20 "$PY" "$here_lib/atspi.py" windows "$APP_PROCESS" 2>/dev/null; }

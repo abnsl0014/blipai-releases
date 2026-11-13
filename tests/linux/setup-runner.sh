@@ -17,7 +17,7 @@ case "${ID}:${ID_LIKE:-}" in
     pick() { apt-cache show "$1" > /dev/null 2>&1 && echo "$1" || echo "$2"; }
     apt-get update -qq >> "$log" 2>&1
     apt-get install -y -qq --no-install-recommends \
-      sudo ca-certificates curl jq file procps psmisc iptables xdg-utils desktop-file-utils \
+      sudo ca-certificates curl jq file procps psmisc iptables xdg-utils desktop-file-utils libglib2.0-bin \
       xvfb openbox xdotool x11-utils imagemagick sway wtype wl-clipboard grim xwayland \
       pulseaudio pulseaudio-utils dbus dbus-x11 at-spi2-core python3-pyatspi python3-gi \
       gir1.2-gtk-3.0 python3-evdev espeak-ng libnss3 libgbm1 libxss1 libxtst6 \

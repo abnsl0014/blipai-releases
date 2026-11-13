@@ -114,9 +114,20 @@ fi
 echo "::add-mask::$access"; echo "::add-mask::$refresh"
 record PASS "Test account signs in (Supabase)" "password grant returned a session"
 touch "$OUT/.signed-in"   # from here on, screenshots stay private (lib.sh)
-xdg-open "blipai://auth?token=$access&refresh_token=$refresh" > "$OUT/xdg-open.log" 2>&1 &
-if wait_until 45 signed_in; then record PASS "Signs in through the blipai://auth link (xdg-open)" "token saved by the app"
-else record FAIL "Signs in through the blipai://auth link (xdg-open)" "no token saved within 45 s; xdg-open: $(tail -n 2 "$OUT/xdg-open.log" | tr '\n' ' ' | cut -c1-150)"; fi
+# Browsers hand the link to the desktop: Chrome runs xdg-open; Firefox and GNOME use GIO.
+# Outside GNOME/KDE/Xfce (Openbox, Sway, Hyprland, i3), xdg-open runs in its "generic"
+# mode, which reads the handler's Exec= line itself.
+link="blipai://auth?token=$access&refresh_token=$refresh"
+xdg-open "$link" > "$OUT/xdg-open.log" 2>&1 &
+if wait_until 30 signed_in; then
+  record PASS "Signs in through the blipai://auth link (xdg-open, as Chrome opens it)" "token saved by the app"
+else
+  why=$(grep -v '^$' "$OUT/xdg-open.log" | head -n 2 | paste -sd' ' | cut -c1-160)
+  record FAIL "Signs in through the blipai://auth link (xdg-open, as Chrome opens it)" "the app never got the link; xdg-open ($(xdg-open --version 2>/dev/null | head -n 1), ${XDG_CURRENT_DESKTOP:-no desktop} → generic mode): ${why}. The app writes Exec=\"<path>\" %U (quoted) and this xdg-open runs a program named with the quotes; GNOME, KDE and Firefox aren't affected"
+  gio open "$link" > "$OUT/gio-open.log" 2>&1 &
+  if wait_until 30 signed_in; then record PASS "Signs in through the blipai://auth link (gio open, as GNOME and Firefox open it)" "token saved by the app"
+  else record FAIL "Signs in through the blipai://auth link (gio open, as GNOME and Firefox open it)" "no token saved within 30 s: $(head -n 2 "$OUT/gio-open.log" | paste -sd' ' | cut -c1-150)"; fi
+fi
 sleep 3
 ui_dump signed-in
 
@@ -133,7 +144,8 @@ for i in $(seq 1 40); do kl=$(key_listener); [ -n "$kl" ] && break; sleep 0.5; d
 if [ -n "$kl" ]; then
   record PASS "Key listener running" "$kl"
 else
-  record FAIL "Key listener running" "$( [ "$SESSION" = wayland ] && echo "no /dev/input device open: push-to-talk can't work (is the user in the input group?)" || echo "X11KeyServer not running: push-to-talk can't work")"
+  said=$(grep -aiE 'key listener|push-to-talk|keyspy|evdev|/dev/input' "$OUT/app-stderr.log" | tail -n 3 | paste -sd' ' | cut -c1-220)
+  record FAIL "Key listener running" "$( [ "$SESSION" = wayland ] && echo "no /dev/input device open: push-to-talk can't work (is the user in the input group?)" || echo "X11KeyServer not running: push-to-talk can't work"); the app said: ${said:-nothing}"
 fi
 ui_dump home
 
