@@ -55,7 +55,9 @@ retry() {  # retry COMMAND...: up to 4 tries, 10/20/30 s apart, for network blip
   return 1
 }
 
-distro() { . /etc/os-release; echo "${PRETTY_NAME:-$ID}"; }
+# In a subshell: os-release defines VERSION (e.g. "12 (bookworm)"), which would overwrite the
+# release version every script uses (and is exported to them). Arch's has none.
+distro() { ( . /etc/os-release; echo "${PRETTY_NAME:-$ID}" ); }
 
 screenshot() {  # screenshot NAME → $OUT/screens/NN-NAME.png (private once signed in)
   local dir="$OUT/screens" n

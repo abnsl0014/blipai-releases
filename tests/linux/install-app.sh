@@ -21,8 +21,9 @@ fuse_check() {
   if grep -q '^/tmp/' <<< "$out"; then echo ok; else echo "$out" | tr '\n' ' ' | cut -c1-200; fi
 }
 install_libfuse() {
-  . /etc/os-release
-  case "${ID}:${ID_LIKE:-}" in
+  local os  # read in a subshell: os-release's VERSION would overwrite the release version
+  os=$(. /etc/os-release; echo "${ID}:${ID_LIKE:-}")
+  case "$os" in
     ubuntu:*|debian:*|*:*debian*)
       pkg=$(apt-cache show libfuse2t64 > /dev/null 2>&1 && echo libfuse2t64 || echo libfuse2)
       sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq "$pkg" fuse3 > /dev/null 2>&1; echo "sudo apt install $pkg" ;;
@@ -62,7 +63,15 @@ if [ -z "${PREV_APPIMAGE:-}" ]; then
 else
   clean_install
   cp "$PREV_APPIMAGE" "$APPIMAGE_PATH" && chmod +x "$APPIMAGE_PATH"
-  launch_app
+  # Where Ubuntu (23.10+) limits user namespaces, releases before 0.5.10 exit at once unless
+  # started with --no-sandbox (0.5.10's launcher does that itself), so people on those
+  # releases used that workaround. Start the previous release the same way for this check only.
+  prev_args=()
+  if [ "$(cat /proc/sys/kernel/apparmor_restrict_unprivileged_userns 2> /dev/null)" = 1 ]; then
+    prev_args=(--no-sandbox)
+    record INFO "Previous release starts with --no-sandbox" "apparmor_restrict_unprivileged_userns=1 here; releases before 0.5.10 need it on Ubuntu 23.10+"
+  fi
+  launch_app "${prev_args[@]}"
   found=""
   wait_until 90 bash -c "grep -aqE 'Found version|is not available|Error: ' \"\$(find '$HOME/.config' -maxdepth 4 -ipath '*blip*' -name main.log | head -n 1)\""
   found=$(grep -aE 'Found version|is not available|Error: ' "$(app_log)" 2>/dev/null | head -n 1)
