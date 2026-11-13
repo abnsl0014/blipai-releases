@@ -72,7 +72,7 @@ onboarding_walk() {
 }
 
 grant_paste_permission() {
-  local dlg how said deadline FAIL=FAIL
+  local dlg how said deadline told buttons FAIL=FAIL
   [ -f "$OUT/.portal-broken" ] && FAIL=HARNESS   # the portal didn't answer the test's own probe either
   press "Allow" > "$OUT/onboarding-allow-press.txt"
   # The desktop's dialog (xdg-desktop-portal-gnome's "Remote Desktop" / -kde's "Remote Control").
@@ -90,11 +90,16 @@ grant_paste_permission() {
     return 1
   fi
   record PASS "Onboarding: Allow opens the desktop's paste dialog" "$(cut -c1-250 <<< "$dlg")"
-  # The onboarding tells the user: "Click Allow, then choose Share or Allow in the window that opens."
-  if grep -q 'Share, greyed out' <<< "$dlg"; then
-    record WARN "Onboarding's paste instructions match the dialog" "GNOME's dialog keeps Share greyed out until \"Allow Remote Interaction\" is switched on; the onboarding only says \"choose Share or Allow\""
-  elif ! grep -qE '\((Share|Allow)\)' <<< "$dlg"; then
-    record WARN "Onboarding's paste instructions match the dialog" "the onboarding says \"choose Share or Allow\", but this dialog's buttons are: $(grep -oE '\([^)]*\)' <<< "$dlg" | paste -sd' ')"
+  # Do the onboarding's words match the dialog in front of the user? (0.5.10's first wording,
+  # "choose Share or Allow", matched neither GNOME's nor Plasma 6.6's.)
+  told=$(grep -A1 -xF "Allow Blip to paste" "$OUT/ui-onboarding-setup.txt" 2> /dev/null | tail -n 1)
+  buttons=$(grep -oE '\(([A-Z][a-z]+)(, greyed out)?\)' <<< "$dlg" | tr -d '()' | sed 's/, greyed out//' | grep -vx Cancel | grep -vx Deny | paste -sd' ')
+  if grep -q 'Share, greyed out' <<< "$dlg" && ! grep -q 'Allow Remote Interaction' <<< "$told"; then
+    record WARN "Onboarding's paste instructions match the dialog" "GNOME's dialog keeps Share greyed out until \"Allow Remote Interaction\" is switched on, and the onboarding doesn't say so: \"$(cut -c1-160 <<< "$told")\""
+  elif [ -n "$buttons" ] && ! grep -qwE "$(tr ' ' '|' <<< "$buttons")" <<< "$told"; then
+    record WARN "Onboarding's paste instructions match the dialog" "the dialog's button is $buttons, but the onboarding says: \"$(cut -c1-160 <<< "$told")\""
+  else
+    record PASS "Onboarding's paste instructions match the dialog" "dialog: $buttons; onboarding: \"$(cut -c1-160 <<< "$told")\""
   fi
   how=$(with_timeout 30 "$PY" "$here/atspi.py" portal-approve 2>&1)
   record INFO "Paste dialog answered (AT-SPI, as a person would)" "$how"
