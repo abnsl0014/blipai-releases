@@ -233,6 +233,22 @@ if judge "Push-to-talk (hold Ctrl+Super) types into the focused app" "$phrase" "
   record INFO "Push-to-talk: keys released → text in the box" "$(( written - RELEASED_AT )) ms"
 fi
 screenshot push-to-talk
+if [ -n "$DESKTOP" ] && [ -n "$(printf '%s' "$text" | tr -d '[:space:]')" ]; then
+  # GNOME and KDE paste with Ctrl+V, which terminals read as ^V; the dictation stays on the
+  # clipboard so a user can press Ctrl+Shift+V there (blip-ai-linux #27). The app used to put
+  # the old clipboard back 500 ms after the paste, so wait past that, then ask the text box.
+  sleep 1.5
+  rm -f "$TARGET_FILE.clip"; touch "$TARGET_FILE.clipreq"
+  wait_until 5 test -e "$TARGET_FILE.clip"
+  clip=$(cat "$TARGET_FILE.clip" 2> /dev/null)
+  if [ ! -e "$TARGET_FILE.clip" ]; then
+    record HARNESS "The dictation stays on the clipboard (for Ctrl+Shift+V in a terminal)" "the test text box didn't answer with the clipboard in 5 s"
+  elif [ -n "$(printf '%s' "$clip" | tr -d '[:space:]')" ] && [ "$(printf '%s' "$clip" | tr -s '[:space:]' ' ' | sed 's/ *$//')" = "$(printf '%s' "$text" | tr -s '[:space:]' ' ' | sed 's/ *$//')" ]; then
+    record PASS "The dictation stays on the clipboard (for Ctrl+Shift+V in a terminal)" "2 s after the paste: \"$(cut -c1-80 <<< "$clip")\""
+  else
+    record FAIL "The dictation stays on the clipboard (for Ctrl+Shift+V in a terminal)" "2 s after the paste the clipboard holds \"$(cut -c1-80 <<< "$clip")\", not the dictation, so a terminal user can't paste it"
+  fi
+fi
 # The key listener starts a while after sign-in (not within 35 s of the relaunch in run 4,
 # yet push-to-talk worked), so look for it once the first dictation has run.
 kl=""

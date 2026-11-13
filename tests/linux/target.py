@@ -6,7 +6,8 @@ Usage: target.py FILE [TITLE]
   and brings the window forward (the test does it before each dictation). Every key,
   focus change and text change is logged to FILE.events (not the text itself), so a
   "nothing typed" failure can say what the box received; on Ctrl+Shift+V (the app's portal
-  paste on GNOME and KDE) it also notes what the clipboard held.
+  paste on GNOME and KDE) it also notes what the clipboard held. Creating FILE.clipreq
+  writes the clipboard's text to FILE.clip.
 GTK picks X11 or Wayland from the environment, so the same window serves both sessions.
 """
 import os
@@ -63,7 +64,23 @@ def on_key(_w, ev):
     return False
 
 
+def write_clip(text):
+    tmp = path + ".clip.tmp"
+    with open(tmp, "w") as f:
+        f.write(text or "")
+    os.replace(tmp, path + ".clip")
+
+
 def poll():
+    if os.path.exists(path + ".clipreq"):
+        # The test asks what the clipboard holds now. This window has the keyboard, so
+        # GTK can read the clipboard on Wayland too (GNOME has no data-control protocol
+        # for wl-paste to use without a window of its own).
+        try:
+            os.remove(path + ".clipreq")
+        except OSError:
+            pass
+        Gtk.Clipboard.get(Gdk.SELECTION_CLIPBOARD).request_text(lambda _c, text: write_clip(text))
     if os.path.exists(path + ".clear"):
         try:
             os.remove(path + ".clear")
