@@ -121,16 +121,27 @@ def main():
         import time
         for w, nodes in portal_dialogs():
             done = []
-            for n in nodes:
-                try:
-                    role, name = n.getRoleName(), n.name or ""
-                except Exception:
+            for switch in GRANT_SWITCHES:
+                # GTK 4.18 (GNOME 48) has the row and the switch in it both as check boxes
+                # of that name; only the switch has an action. Turn it on once.
+                cands = []
+                for n in nodes:
+                    try:
+                        if n.getRoleName() in ("check box", "toggle button", "switch") and (n.name or "") == switch:
+                            cands.append(n)
+                    except Exception:
+                        continue
+                if not cands or any(n.getState().contains(pyatspi.STATE_CHECKED) for n in cands):
                     continue
-                if role in ("check box", "toggle button", "switch") and name in GRANT_SWITCHES \
-                        and not n.getState().contains(pyatspi.STATE_CHECKED):
-                    n.queryAction().doAction(0)
-                    done.append(f'turned on "{name}"')
-                    time.sleep(0.5)
+                for n in cands:
+                    try:
+                        if n.queryAction().nActions > 0:
+                            n.queryAction().doAction(0)
+                            done.append(f'turned on "{switch}"')
+                            time.sleep(0.5)
+                            break
+                    except Exception:
+                        continue
             for label in APPROVE:
                 for n in nodes:
                     try:

@@ -33,8 +33,11 @@ chmod 0440 /etc/sudoers.d/tester
 TEST_USER=tester bash "$here/setup-runner.sh" || exit 1
 if [ -n "${DESKTOP:-}" ]; then
   # GNOME Shell and the portals talk to the system bus (logind, polkit, …), which a
-  # container doesn't start. Without logind GNOME Shell runs as it does without systemd.
+  # container doesn't start.
   mkdir -p /run/dbus; dbus-daemon --system --fork 2> /dev/null || true
+  # GNOME Shell takes /run/systemd/seats as "logind is running" and then can't start
+  # without it; the packages create that folder, but no logind runs in a container.
+  rm -rf /run/systemd/seats
   bash "$here/uinput-as-installed.sh"
 fi
 # Keep the variables the scripts need; HOME and USER become the test user's.
