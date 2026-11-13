@@ -1,0 +1,70 @@
+# TEMP repro (not for merge): wtype into an Xwayland window on Arch Sway 1.12, with a REAL
+# libinput keyboard (uinput) on the seat instead of the release test's `wtype -s`.
+# Plain wtype vs wtype with the Hyper_L keymap primer (blip-ai-linux PR #25), 25 times each,
+# into an X11 and a native GTK text box. No secrets, no app code.
+name: TEMP wtype-xwayland-uinput
+on: [push, workflow_dispatch]
+jobs:
+  arch:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - name: uinput on the host
+        run: sudo modprobe uinput && ls -l /dev/uinput
+      - name: Run in archlinux:latest
+        run: |
+          cat > repro.sh <<'SH'
+          set -u
+          pacman -Syu --noconfirm --needed sway xorg-xwayland wtype python-gobject gtk3 python-evdev jq systemd >/dev/null
+          echo "versions: $(pacman -Q sway wlroots0.20 xorg-xwayland libxkbcommon wtype | tr '\n' ' ')"
+          setcap -r /usr/bin/sway 2>/dev/null || true
+          /usr/lib/systemd/systemd-udevd --daemon; sleep 1
+          python3 - <<'PY' &
+          import evdev, time
+          from evdev import ecodes as e
+          ui = evdev.UInput({e.EV_KEY: list(range(1, 120))}, name="blip-test-keyboard")
+          print("uinput keyboard", ui.device.path, flush=True)
+          time.sleep(3600)
+          PY
+          sleep 2; udevadm trigger --subsystem-match=input --action=add; udevadm settle
+          export XDG_RUNTIME_DIR=/tmp/xdg; mkdir -p -m700 $XDG_RUNTIME_DIR
+          printf 'output HEADLESS-1 resolution 1280x800\nxwayland enable\ndefault_border none\n' > /tmp/sway.cfg
+          WLR_BACKENDS=headless,libinput LIBSEAT_BACKEND=noop WLR_RENDERER=pixman sway -c /tmp/sway.cfg > /tmp/sway.log 2>&1 &
+          for i in $(seq 100); do ls $XDG_RUNTIME_DIR/wayland-* 2>/dev/null | grep -qv lock && break; sleep 0.2; done
+          export WAYLAND_DISPLAY=$(basename $(ls $XDG_RUNTIME_DIR/wayland-* | grep -v lock | head -1)) SWAYSOCK=$(ls $XDG_RUNTIME_DIR/sway-ipc.* | head -1)
+          for i in $(seq 100); do ls /tmp/.X11-unix/ 2>/dev/null | grep -q X && break; sleep 0.2; done
+          export DISPLAY=:$(ls /tmp/.X11-unix/ | sed 's/^X//' | sort -n | tail -1)
+          echo "seat keyboards: $(swaymsg -t get_inputs | jq -c '[.[] | select(.type=="keyboard") | .name]')"
+          cat > /tmp/target.py <<'PY'
+          import os, sys, gi
+          gi.require_version("Gtk", "3.0")
+          from gi.repository import GLib, Gtk
+          path = sys.argv[1]; open(path, "w").close()
+          win = Gtk.Window(title=sys.argv[2]); view = Gtk.TextView(); buf = view.get_buffer(); win.add(view)
+          def changed(b):
+              open(path, "w").write(b.get_text(b.get_start_iter(), b.get_end_iter(), True))
+          def poll():
+              if os.path.exists(path + ".clear"):
+                  os.remove(path + ".clear"); buf.set_text(""); win.present(); view.grab_focus()
+              return True
+          buf.connect("changed", changed); GLib.timeout_add(100, poll); win.show_all(); view.grab_focus(); Gtk.main()
+          PY
+          T="I think we should move the meeting to next week. Café, über — done!"
+          for B in x11 wayland; do
+            GDK_BACKEND=$B python3 /tmp/target.py /tmp/$B.txt T$B > /tmp/t$B.log 2>&1 &
+            for i in $(seq 100); do swaymsg -t get_tree | grep -q "\"T$B\"" && break; sleep 0.1; done
+            echo "target $B shell: $(swaymsg -t get_tree | jq -r ".. | objects | select(.name==\"T$B\") | .shell")"
+            for MODE in plain primer; do
+              pass=0; first=""
+              for i in $(seq 25); do
+                : > /tmp/$B.txt.clear; sleep 0.4
+                if [ $MODE = plain ]; then wtype -- "$T"; else wtype -P Hyper_L -p Hyper_L -- "$T"; fi
+                sleep 0.6; got=$(cat /tmp/$B.txt)
+                if [ "$got" = "$T" ]; then pass=$((pass+1)); elif [ -z "$first" ]; then first="$got"; fi
+              done
+              echo "RESULT $B-target $MODE: $pass/25 ${first:+first failure: [$first]}"
+            done
+            swaymsg "[title=\"T$B\"] kill" >/dev/null; sleep 0.5
+          done
+          SH
+          docker run --rm --privileged -v /dev:/dev -v "$PWD":/w archlinux:latest bash /w/repro.sh
