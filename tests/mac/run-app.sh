@@ -174,7 +174,10 @@ log_before=$(wc -l < "$(app_log)" 2>/dev/null || echo 0)
 render_speech "The quick brown fox jumps over the lazy dog near the river bank." \
   "Please send the quarterly report to the whole team before Friday afternoon." \
   "Um, so I think we should, uh, move the meeting to next week." \
-  "This sentence should never be typed."
+  "This sentence should never be typed." \
+  "The weather today is sunny with a light breeze from the west." \
+  "Our new office opens on the first floor next month." \
+  "Remember to water the plants on Saturday morning."
 
 # 4a. Push-to-talk: hold Fn, speak, release. (After it, the app's log says which mic it used.)
 phrase="The quick brown fox jumps over the lazy dog near the river bank."
@@ -332,6 +335,9 @@ if app_has 'data-missed-action'; then
     record PASS "Failed transcription is kept as a Missed item" "overlay: $(grep -v '^== window' "$OUT/ui-missed-error.txt" | grep -iE 'fail|couldn|error|missed|retry|connect|internet' | head -n 1 | cut -c1-100)"
     open -a "$APP"; sleep 3
     touch "$OUT/.before-save"
+    # The app copies the recording, keeping its modified time, so look for a new name.
+    blip_files() { find "$HOME" -maxdepth 3 -type f \( -name 'BlipAI-*.wav' -o -name 'BlipAI-*.mp3' \) 2>/dev/null | sort; }
+    files_before=$(blip_files)
     pressed=$(press "Save audio" "Blip AI")
     # Click Save in the save panel: a sheet on the home window on macOS 15, found as any
     # window of the app with a Save button otherwise. A bare Return went to whichever
@@ -339,12 +345,11 @@ if app_has 'data-missed-action'; then
     save_click=$(osa "$here/save-panel.applescript" "$APP_PROCESS" 2>&1)
     pressed="$pressed; $save_click"
     sleep 3
-    saved=$(find "$HOME/Documents" "$HOME/Downloads" "$HOME/Desktop" "$HOME" -maxdepth 1 -type f \
-              \( -name '*.wav' -o -name '*.mp3' \) -newer "$OUT/.before-save" 2>/dev/null | head -n 1)
+    saved=$(comm -13 <(printf '%s\n' "$files_before") <(blip_files) | grep . | head -n 1)
     if [ -n "$saved" ] && [ "$(stat -f %z "$saved")" -gt 10000 ]; then
       record PASS "Missed item: Save audio writes the recording" "$(basename "$saved"), $(stat -f %z "$saved") bytes, $(afinfo "$saved" 2>/dev/null | grep -m1 'estimated duration' | sed 's/.*: //')"
     else
-      record FAIL "Missed item: Save audio writes the recording" "press: $(cut -c1-120 <<< "$pressed"); no new .wav/.mp3 in Documents, Downloads, Desktop or home"
+      record FAIL "Missed item: Save audio writes the recording" "press: $(cut -c1-120 <<< "$pressed"); no new BlipAI-*.wav/.mp3 under your home folder"
     fi
     pressed=$(press "Retry" "Blip AI")
     retried=""

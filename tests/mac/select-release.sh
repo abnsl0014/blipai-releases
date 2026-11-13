@@ -12,7 +12,7 @@ mkdir -p "$DL"
 
 TAG="${REQUESTED_TAG:-}"
 if [ -z "$TAG" ]; then   # a push whose message has a "Test-tag: v0.5.10" line
-  TAG=$(grep -oE '^Test-tag: *v[0-9][^ ]*' <<< "${COMMIT_MESSAGE:-}" | head -n 1 | sed 's/^Test-tag: *//')
+  TAG=$(grep -oE '^Test-tag: *v[0-9][^ ]*' <<< "${COMMIT_MESSAGE:-}" | head -n 1 | sed 's/^Test-tag: *//' || true)   # no such line: grep fails, and pipefail would end the script
 fi
 if [ -z "$TAG" ]; then
   TAG=$(retry gh release view -R "$REPO" --json tagName -q .tagName)

@@ -75,10 +75,23 @@ retry() {  # retry COMMAND...: up to 4 tries, 10/20/30 s apart, for network blip
 # with sox, which starts at once: `say` itself can take ~3 s to start talking on a cold
 # runner (seen on macOS 26), which would put unpredictable silence into every dictation.
 speech_file() { echo "$RUNNER_TEMP/speech-$(printf '%s' "$1" | shasum | cut -c1-12).aiff"; }
+speech_tenths() {  # length of a rendered phrase, in tenths of a second (0 if unreadable)
+  afinfo "$1" 2>/dev/null | awk '/estimated duration/ {printf "%d", $3 * 10}' | grep . || echo 0
+}
 render_speech() {  # render_speech "text"... → synthesize ahead of time
-  local text
+  # `say -o` has written files with a header and no sound (run 21, macOS 26): played,
+  # they end at once, so Fn was released right after it was pressed and every recording
+  # was silent. Check the length and render again. Short phrases ("Testing the virtual
+  # microphone.") last under 2 s, so a file counts as silent below half a second.
+  local text f try
   for text in "$@"; do
-    [ -s "$(speech_file "$text")" ] || with_timeout 60 say -o "$(speech_file "$text")" "$text"
+    f=$(speech_file "$text")
+    for try in 1 2 3; do
+      [ -s "$f" ] && [ "$(speech_tenths "$f")" -ge 5 ] && break
+      rm -f "$f"
+      with_timeout 60 say -o "$f" "$text"
+    done
+    [ "$(speech_tenths "$f")" -ge 5 ] || echo "$(date -u +%T) say rendered no sound ($(speech_tenths "$f")/10 s) for: $text" >> "$OUT/sox-retries.txt"
   done
 }
 speak() {  # speak "text" → plays it into BlackHole 2ch and returns when it has finished
@@ -88,7 +101,9 @@ speak_to() {  # speak_to DEVICE "text" → the same, into another virtual device
   # Now and then sox hangs opening the device and plays nothing (run 16: twice, for
   # its whole time limit). The phrases are under 6 s, so give up after 12 s and play
   # it once more; the dictation then just has a pause before the words.
-  render_speech "$2"
+  # Rendered ahead of time (run-app.sh, setup-runner.sh): rendering here would happen
+  # while a hotkey is held and put seconds of silence into the recording.
+  [ -s "$(speech_file "$2")" ] || render_speech "$2"
   local try
   for try in 1 2; do
     with_timeout 12 sox -q "$(speech_file "$2")" -t coreaudio "$1" && return 0
