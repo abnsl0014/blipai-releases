@@ -22,12 +22,26 @@ KEYS = {
 }
 
 
+def node_of(ui):
+    """The /dev/input/eventN the kernel made for the keyboard. (UInput.device is None in
+    some python-evdev versions, so look it up in sysfs by name.)"""
+    import glob
+    time.sleep(0.5)
+    for name_file in glob.glob("/sys/class/input/event*/device/name"):
+        try:
+            if open(name_file).read().strip() == ui.name:
+                return "/dev/input/" + name_file.split("/")[4]
+        except OSError:
+            pass
+    return "(no /dev/input node found)"
+
+
 def main():
     fifo = sys.argv[2]
     if not os.path.exists(fifo):
         os.mkfifo(fifo)
     ui = UInput({e.EV_KEY: sorted(set(KEYS.values()))}, name="Blip Test Keyboard")
-    print("ready", ui.device.path, flush=True)
+    print("ready", node_of(ui), flush=True)
     while True:
         with open(fifo) as f:
             for line in f:

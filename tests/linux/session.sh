@@ -62,7 +62,7 @@ CFG
   # The virtual keyboard: plugged in now, before the app starts and opens input devices.
   setsid "$PY" "$here/keys.py" serve "$KEYS_FIFO" > "$OUT/keys.log" 2>&1 < /dev/null &
   record INFO "Session" "Wayland (Sway $(sway --version 2>/dev/null | awk '{print $3}'), headless) with XWayland on $DISPLAY"
-  if wait_until 10 grep -q ready "$OUT/keys.log"; then
+  if wait_until 10 grep -q 'ready /dev/input/event' "$OUT/keys.log"; then
     record PASS "Virtual keyboard on /dev/input" "$(head -n 1 "$OUT/keys.log")"
   else
     record FAIL "Virtual keyboard on /dev/input" "keys.py: $(tail -n 2 "$OUT/keys.log" | paste -sd' ' | cut -c1-200) ($(ls -l /dev/uinput 2>&1))"
