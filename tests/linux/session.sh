@@ -59,6 +59,12 @@ CFG
   # does by default on GNOME and KDE Wayland too.
   wait_until 20 bash -c "ls /tmp/.X11-unix/ 2>/dev/null | grep -q X"
   env_out DISPLAY ":$(ls /tmp/.X11-unix/ | sed 's/^X//' | sort -n | tail -n 1)"
+  # A headless Sway has no keyboard on its seat (keys.py's uinput device is for the app,
+  # which reads /dev/input; Sway's headless backend doesn't). Then the first key of every
+  # wtype run is lost while the focused window's keyboard focus arrives, and dictations
+  # came out as "he quick brown fox". A real desktop always has one, so keep a virtual
+  # keyboard on the seat for the whole session (wtype sleeping for a day).
+  setsid wtype -s 86400000 > "$OUT/seat-keyboard.log" 2>&1 < /dev/null &
   # The virtual keyboard: plugged in now, before the app starts and opens input devices.
   setsid "$PY" "$here/keys.py" serve "$KEYS_FIFO" > "$OUT/keys.log" 2>&1 < /dev/null &
   record INFO "Session" "Wayland (Sway $(sway --version 2>/dev/null | awk '{print $3}'), headless) with XWayland on $DISPLAY"
