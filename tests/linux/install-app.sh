@@ -83,3 +83,8 @@ rm -rf "$asar_dir"; mkdir -p "$asar_dir"
 ( cd "$asar_dir" && "$APPIMAGE_PATH" --appimage-extract 'resources/app.asar' > /dev/null 2>&1 )
 asar=$(find "$asar_dir" -name app.asar | head -n 1)
 [ -n "$asar" ] && env_out APP_ASAR "$asar"
+# The X11 hotkey helper keyspy ships (the app downloads it from keyspy's GitHub release
+# at build time), so run-app.sh can run it on its own and report why it won't start.
+( cd "$asar_dir" && "$APPIMAGE_PATH" --appimage-extract 'resources/app.asar.unpacked/node_modules/keyspy/runtime/X11KeyServer' > /dev/null 2>&1 )
+key_server=$(find "$asar_dir" -name X11KeyServer -type f | head -n 1)
+[ -n "$key_server" ] && env_out KEY_SERVER "$key_server"

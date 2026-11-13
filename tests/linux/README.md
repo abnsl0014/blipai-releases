@@ -35,12 +35,16 @@ uploaded logs.
 
 `run-app.sh` checks, in order:
 
-1. **First launch.** The app starts and stays up (if Chromium's sandbox stops it, that's a
-   failure, and the test goes on with `--no-sandbox`), shows onboarding, registers the
-   `blipai://` handler and the `blip-ai` command, and checks for updates.
-2. **Sign-in** through the `blipai://auth` link, opened with `xdg-open` as a browser would.
-3. **Relaunch signed in**, with the key listener running: on X11, `X11KeyServer`; on Wayland,
-   the app holding `/dev/input` devices open.
+1. **First launch.** The app starts and stays up (if Chromium's sandbox stops it, as Ubuntu
+   24.04's AppArmor limit on user namespaces does, that's a failure, and the test lifts the
+   limit and goes on), shows onboarding, registers the `blipai://` handler and the `blip-ai`
+   command, and checks for updates. On X11 it also runs the app's hotkey helper
+   (`X11KeyServer`) on its own, which fails where the distro's glibc is older than the helper
+   was built for.
+2. **Sign-in** through the `blipai://auth` link, opened with `xdg-open` as Chrome would, then
+   with `gio open` (GNOME, Firefox) if that fails.
+3. **Relaunch signed in.** After the first dictation, the key listener is checked: on X11,
+   `X11KeyServer`; on Wayland, the app holding `/dev/input` devices open.
 4. **Dictation into the text box:** push-to-talk (hold Ctrl+Super), hands-free
    (Ctrl+Super+Space), filler words, Esc, Paste last transcript (Shift+Alt+Z), a failed
    transcription kept as a Missed item with Save audio and Retry, and history.

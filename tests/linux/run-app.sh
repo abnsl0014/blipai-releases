@@ -32,7 +32,7 @@ signed_in() {
   [ -n "$c" ] && python3 -c 'import json, sys; sys.exit(0 if json.load(open(sys.argv[1])).get("authToken") else 1)' "$c"
 }
 key_listener() {  # prints how the app listens for the hotkey, or nothing
-  local pid; pid=$(pgrep -x "$APP_PROCESS" | head -n 1)
+  local pid; pid=$(app_main_pid)
   if [ "$SESSION" = wayland ]; then
     local n; n=$(ls -l /proc/$pid/fd 2>/dev/null | grep -c '/dev/input/event')
     [ "$n" -gt 0 ] && echo "the app has $n input devices open (evdev)"
@@ -70,13 +70,31 @@ if ! app_running && grep -qiE 'sandbox|setuid' "$OUT/app-stderr.log"; then
   # What a person sees when Chromium's sandbox can't start (e.g. Ubuntu 24.04's AppArmor
   # limits on user namespaces): the app exits at once. Note it, and go on with --no-sandbox.
   userns=$(cat /proc/sys/kernel/apparmor_restrict_unprivileged_userns 2>/dev/null || echo n/a)
-  record FAIL "Starts without extra flags" "exits at once on $(distro): Chromium's sandbox can't start (apparmor_restrict_unprivileged_userns=$userns; Ubuntu's default is 1 since 23.10): $(grep -m1 -iE 'sandbox|setuid' "$OUT/app-stderr.log" | sed 's/^\[[^]]*\] *//' | cut -c1-160). A user must run it with --no-sandbox; the test does from here on"
-  echo "export APP_EXTRA_ARGS=--no-sandbox" >> "$SESSION_ENV"; export APP_EXTRA_ARGS=--no-sandbox
+  record FAIL "Starts without extra flags" "exits at once on $(distro): Chromium's sandbox can't start (apparmor_restrict_unprivileged_userns=$userns; Ubuntu's default is 1 since 23.10): $(grep -m1 -iE 'sandbox|setuid' "$OUT/app-stderr.log" | sed 's/^\[[^]]*\] *//' | cut -c1-160). A user must run it with --no-sandbox or lift that limit"
+  # Go on as on a machine where it starts. Lifting the limit (rather than --no-sandbox) keeps
+  # the rest honest: the desktop entry the blipai:// link starts has no extra flags either.
+  if [ "$userns" = 1 ] && sudo -n sysctl -q -w kernel.apparmor_restrict_unprivileged_userns=0 2> /dev/null; then
+    record INFO "Rest of the test" "runs with kernel.apparmor_restrict_unprivileged_userns=0 (sudo sysctl), so the app and its blipai:// link handler start"
+  else
+    echo "export APP_EXTRA_ARGS=--no-sandbox" >> "$SESSION_ENV"; export APP_EXTRA_ARGS=--no-sandbox
+    record INFO "Rest of the test" "runs the app with --no-sandbox (the AppArmor limit couldn't be lifted); the blipai:// link handler still starts it without"
+  fi
   launch_app; sleep 15
 fi
 screenshot first-launch
 if app_running; then record PASS "Starts and stays up (15 s)" "on $(distro), ${SESSION}"
 else record FAIL "Starts and stays up (15 s)" "exited: $(tail -n 3 "$OUT/app-stderr.log" | tr '\n' ' ' | cut -c1-250)"; exit 0; fi
+if [ "$SESSION" = x11 ] && [ -n "${KEY_SERVER:-}" ]; then
+  # The app's X11 hotkey helper on its own: it runs until stopped when it can start.
+  glibc=$(getconf GNU_LIBC_VERSION 2> /dev/null)
+  needs=$(grep -aoE 'GLIBC_2\.[0-9]+' "$KEY_SERVER" | sort -Vu | tail -n 1)
+  timeout 3 "$KEY_SERVER" > /dev/null 2> "$OUT/x11keyserver.txt"; rc=$?
+  if [ "$rc" = 124 ]; then record PASS "X11 hotkey helper (keyspy X11KeyServer) runs here" "$glibc; the helper needs ${needs:-?}"
+  else
+    KEY_SERVER_ERROR="exits with code $rc on $(distro) ($glibc; the helper needs ${needs:-?}): $(head -c 200 "$OUT/x11keyserver.txt" | tr '\n' ' ')"
+    record FAIL "X11 hotkey helper (keyspy X11KeyServer) runs here" "$KEY_SERVER_ERROR. Push-to-talk and hands-free can't work in an X11 session on this distro"
+  fi
+fi
 windows=$(app_windows)
 if grep -qi welcome <<< "$windows"; then record PASS "Shows onboarding on first launch" "windows: $windows"
 else record FAIL "Shows onboarding on first launch" "windows: ${windows:-none readable over AT-SPI}"; fi
@@ -91,8 +109,10 @@ shim=$(readlink "$APP_DIR/blip-ai" 2>/dev/null)
 [ "$shim" = "$APPIMAGE_PATH" ] && record PASS "Installs the blip-ai command" "$APP_DIR/blip-ai → $shim" \
   || record WARN "Installs the blip-ai command" "$APP_DIR/blip-ai → ${shim:-missing} (the website's compositor keybindings use it)"
 
+update_seen() { grep -qaE "Found version|is not available|Error: " "$(app_log)" 2> /dev/null; }
+wait_until 30 update_seen
 update_line=$(grep -m1 -aE "Found version|is not available|Error: " "$(app_log)" 2>/dev/null)
-if [ -z "$update_line" ]; then record FAIL "Update check on launch" "no update check in main.log 15 s after launch"
+if [ -z "$update_line" ]; then record FAIL "Update check on launch" "no update check in main.log 45 s after launch"
 elif [ "$TAG" = "${LATEST_TAG:-}" ] && grep -q "is not available" <<< "$update_line"; then record PASS "Update check on launch" "up to date: $(sed 's/.*\] //' <<< "$update_line" | cut -c1-160)"
 elif [ "$TAG" = "${LATEST_TAG:-}" ]; then record FAIL "Update check on launch" "$(cut -c1-200 <<< "$update_line")"
 else record INFO "Update check on launch" "$(sed 's/.*\] //' <<< "$update_line" | cut -c1-200)"; fi
@@ -162,7 +182,7 @@ if [ -n "$kl" ]; then
   record PASS "Key listener running" "$kl"
 else
   said=$(grep -aiE 'key listener|push-to-talk|keyspy|evdev|/dev/input' "$OUT/app-stderr.log" | tail -n 3 | paste -sd' ' | cut -c1-220)
-  record FAIL "Key listener running" "$( [ "$SESSION" = wayland ] && echo "no /dev/input device open: push-to-talk can't work (is the user in the input group?)" || echo "X11KeyServer not running: push-to-talk can't work"); the app said: ${said:-nothing}"
+  record FAIL "Key listener running" "$( [ "$SESSION" = wayland ] && echo "no /dev/input device open: push-to-talk can't work (is the user in the input group?)" || echo "X11KeyServer not running: push-to-talk can't work${KEY_SERVER_ERROR:+ (it $KEY_SERVER_ERROR)}"); the app said: ${said:-nothing}"
 fi
 
 # 4b. Hands-free.
