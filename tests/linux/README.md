@@ -70,8 +70,9 @@ uploaded logs.
 
 ## Limits
 
-- No GNOME or KDE session: their Wayland path (`ydotool` and its daemon) isn't covered; Sway
-  covers the wlroots path (`wtype`). X11 runs with Openbox.
+- No GNOME or KDE session yet: their Wayland path (paste through the RemoteDesktop portal, after
+  the desktop's one-time "allow" dialog) isn't covered; Sway covers the wlroots path (`wtype`).
+  X11 runs with Openbox.
 - Containers share the Ubuntu runner's kernel, so kernel-level differences between distros aren't
   covered; the distro's own libraries, FUSE, packages and desktop tools are.
 - No sleep and wake, real microphones or Bluetooth; one synthetic voice.

@@ -4,8 +4,8 @@
 # accessibility bus, GTK for the text box, xdotool/wtype, iptables, and the libraries an
 # Electron AppImage needs. It deliberately leaves out libfuse2: install-app.sh checks
 # whether the AppImage starts without it and installs it the way the website says.
-# Then the website's Wayland setup: its install command for wtype, wl-clipboard and
-# ydotool, as printed there, and the `input` group for the user who runs the app.
+# Then the website's Wayland setup: its install command (wl-clipboard and wtype), as
+# printed there, and the `input` group for the user who runs the app.
 #   TEST_USER: the user who runs the app (default: the user who ran sudo)
 set -uo pipefail
 . /etc/os-release
@@ -50,15 +50,10 @@ tail -n 5 "$log"
 # The website's Wayland step 1, word for word (content/articles/linux-setup.md). Its result
 # goes to website-wayland-tools.txt for user-steps.sh to report.
 out_dir="${OUT:-${RUNNER_TEMP:-/tmp}/blip-test}"; mkdir -p "$out_dir"
-case "${ID}:${ID_LIKE:-}:${VERSION_CODENAME:-}" in
-  debian:*:trixie)
-    # Debian 13 has ydotool only in backports; the guide adds them first (BlipAIWebsite#258).
-    echo 'deb http://deb.debian.org/debian trixie-backports main' > /etc/apt/sources.list.d/backports.list
-    apt-get update -qq >> "$out_dir/website-wayland-tools.log" 2>&1
-    cmd="apt install -y wtype wl-clipboard ydotool/trixie-backports" ;;
-  ubuntu:*|debian:*|*:*debian*) cmd="apt install -y wtype wl-clipboard ydotool" ;;
-  fedora:*) cmd="dnf install -y wtype wl-clipboard ydotool" ;;
-  *) cmd="pacman -Syu --noconfirm wtype wl-clipboard ydotool" ;;
+case "${ID}:${ID_LIKE:-}" in   # BlipAIWebsite#260: wl-clipboard and wtype; no ydotool
+  ubuntu:*|debian:*|*:*debian*) cmd="apt install -y wl-clipboard wtype" ;;
+  fedora:*) cmd="dnf install -y wl-clipboard wtype" ;;
+  *) cmd="pacman -Syu --noconfirm wl-clipboard wtype" ;;
 esac
 $cmd >> "$out_dir/website-wayland-tools.log" 2>&1
 echo "$? sudo ${cmd/ -y/}" > "$out_dir/website-wayland-tools.txt"
