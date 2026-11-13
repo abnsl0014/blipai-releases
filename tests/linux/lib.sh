@@ -249,14 +249,28 @@ focus_window() {  # GNOME and KDE: focus_window TITLE, as a click on that window
     [ -n "$id" ]
   fi
 }
+focus_target_once() {
+  if [ -n "$DESKTOP" ]; then focus_window "Blip Test Target"
+  elif [ "$SESSION" = wayland ]; then swaymsg '[title="Blip Test Target"] focus' > /dev/null 2>&1
+  else xdotool search --name 'Blip Test Target' windowactivate --sync > /dev/null 2>&1 || true; fi
+}
+target_has_focus() {  # the box's own last focus event says it has the keyboard
+  [ "$(grep -E 'window (focused|lost focus)$' "$TARGET_FILE.events" 2> /dev/null | tail -n 1 | cut -d' ' -f2-)" = "window focused" ]
+}
 focus_target() {
   touch "$TARGET_FILE.clear"
   sleep 0.6
   DICTATION_FROM=$(date +%s%3N)   # paste_path looks at what the app did from here on
-  if [ -n "$DESKTOP" ]; then focus_window "Blip Test Target"
-  elif [ "$SESSION" = wayland ]; then swaymsg '[title="Blip Test Target"] focus' > /dev/null 2>&1
-  else xdotool search --name 'Blip Test Target' windowactivate --sync > /dev/null 2>&1 || true; fi
+  focus_target_once
   sleep 0.5
+  # Right after a (re)launch the app's own window can take focus back as it comes up
+  # (GNOME, Fedora 42: the box was focused and lost it in the same millisecond, so the
+  # first dictation went to the app's window). Focus once more, as a person would click
+  # back; each retry is logged, so an app that keeps taking focus still shows up.
+  if [ -f "$TARGET_FILE.events" ] && ! target_has_focus; then
+    echo "$(date -u +%T) refocused the text box (it had lost focus)" >> "$OUT/focus-retries.log"
+    sleep 1; focus_target_once; sleep 0.5
+  fi
 }
 target_text() { cat "$TARGET_FILE" 2>/dev/null; }
 target_has_text() { [ -n "$(target_text | tr -d '[:space:]')" ]; }
