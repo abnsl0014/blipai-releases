@@ -31,13 +31,23 @@ signed_in() {
   local c; c=$(app_config)
   [ -n "$c" ] && python3 -c 'import json, sys; sys.exit(0 if json.load(open(sys.argv[1])).get("authToken") else 1)' "$c"
 }
+key_server_pids() {  # pids running the app's X11KeyServer. app.asar holds it packed, so
+  # Electron runs a copy from a temp file with another name: compare the binary itself.
+  local p
+  for p in $(pgrep -u "$(id -u)"); do
+    if [ -n "${KEY_SERVER:-}" ]; then cmp -s "/proc/$p/exe" "$KEY_SERVER" 2> /dev/null && echo "$p"
+    else tr '\0' ' ' < "/proc/$p/cmdline" 2> /dev/null | grep -q X11KeyServer && echo "$p"; fi
+  done
+}
 key_listener() {  # prints how the app listens for the hotkey, or nothing
   local pid; pid=$(app_main_pid)
   if [ "$SESSION" = wayland ]; then
-    local n; n=$(ls -l /proc/$pid/fd 2>/dev/null | grep -c '/dev/input/event')
+    # Started through `sg input`, the app's /proc entries can be root's to read.
+    local n; n=$( (ls -l /proc/$pid/fd 2> /dev/null || sudo -n ls -l /proc/$pid/fd 2> /dev/null) | grep -c '/dev/input/event')
     [ "$n" -gt 0 ] && echo "the app has $n input devices open (evdev)"
   else
-    pgrep -f X11KeyServer > /dev/null && echo "X11KeyServer running"
+    local k; k=$(key_server_pids | head -n 1)
+    [ -n "$k" ] && echo "X11KeyServer running (pid $k: $(readlink /proc/$k/exe 2> /dev/null))"
   fi
 }
 appimage_mounts() { mount 2>/dev/null | grep -c '/tmp/.mount_Blip' ; }
@@ -225,10 +235,18 @@ record SKIP "Real Bluetooth or USB mic plugged in or out" "no such hardware on a
 if app_has 'data-missed-action'; then
   ips=$( (getent ahosts proxy.tryblipai.com; getent ahosts api.groq.com) | awk '{print $1}' | sort -u | xargs)
   for ip in $ips; do
-    case "$ip" in *:*) sudo ip6tables -I OUTPUT -d "$ip" -j REJECT 2>/dev/null ;; *) sudo iptables -I OUTPUT -d "$ip" -j REJECT ;; esac
+    case "$ip" in *:*) sudo ip6tables -I OUTPUT -d "$ip" -j REJECT 2>> "$OUT/iptables.log" ;; *) sudo iptables -I OUTPUT -d "$ip" -j REJECT 2>> "$OUT/iptables.log" ;; esac
   done
-  record INFO "Transcription servers blocked" "proxy.tryblipai.com and api.groq.com ($ips)"
+  # Check the block holds before blaming the app (on Arch the transcription went through).
+  if curl -sS -m 8 -o /dev/null https://api.groq.com/ 2> /dev/null || curl -sS -m 8 -o /dev/null https://proxy.tryblipai.com/ 2> /dev/null; then
+    blocked=""
+    record SKIP "Failed transcription is kept as a Missed item" "the test couldn't block the transcription servers here (curl still reaches them; iptables: $(head -c 160 "$OUT/iptables.log" 2> /dev/null | tr '\n' ' ')$(sudo iptables -V 2>&1 | head -n 1))"
+  else
+    blocked=1
+    record INFO "Transcription servers blocked" "proxy.tryblipai.com and api.groq.com ($ips); curl can't reach them"
+  fi
   phrase="Remember to water the plants on Saturday morning."
+  [ -n "$blocked" ] && {
   focus_target
   ptt "$phrase"
   missed_ts=""
@@ -239,10 +257,12 @@ if app_has 'data-missed-action'; then
     sleep 1
   done
   ui_dump missed-error
+  }
   for ip in $ips; do
-    case "$ip" in *:*) sudo ip6tables -D OUTPUT -d "$ip" -j REJECT 2>/dev/null ;; *) sudo iptables -D OUTPUT -d "$ip" -j REJECT ;; esac
+    case "$ip" in *:*) sudo ip6tables -D OUTPUT -d "$ip" -j REJECT 2>/dev/null ;; *) sudo iptables -D OUTPUT -d "$ip" -j REJECT 2>/dev/null ;; esac
   done
-  if [ -n "$missed_ts" ]; then
+  if [ -z "$blocked" ]; then :
+  elif [ -n "$missed_ts" ]; then
     record PASS "Failed transcription is kept as a Missed item" "overlay: $(grep -v '^== window' "$OUT/ui-missed-error.txt" | grep -iE 'fail|couldn|error|missed|saved' | head -n 1 | cut -c1-100)"
     setsid "$APPIMAGE_PATH" ${APP_EXTRA_ARGS:-} > /dev/null 2>&1 < /dev/null &   # opening the app again brings its window up
     sleep 4
@@ -253,7 +273,13 @@ if app_has 'data-missed-action'; then
     # box and presses Enter. (The app is an X11 client in both sessions, directly or
     # through XWayland, so xdotool reaches it; AT-SPI doesn't see GTK's dialog here.)
     dialog=""
-    if wait_until 10 xdotool search --name '^Save audio$'; then
+    if [ "$SESSION" = wayland ] && wait_until 10 bash -c "swaymsg -t get_tree | grep -q '\"Save audio\"'"; then
+      # Under Sway, xdotool's keys don't reach XWayland windows; focus it with Sway and
+      # type with wtype (one run, so its virtual keyboard stays; the pause lets it settle).
+      swaymsg '[title="^Save audio$"] focus' > /dev/null 2>&1; sleep 0.6
+      wtype -s 400 -M ctrl -k a -m ctrl -s 200 "$saved_to" -s 300 -k Return
+      dialog="focused the Save audio dialog with Sway, typed the path with wtype and pressed Enter"
+    elif wait_until 10 xdotool search --name '^Save audio$'; then
       wid=$(xdotool search --name '^Save audio$' | head -n 1)
       xdotool windowactivate --sync "$wid" > /dev/null 2>&1; sleep 0.6
       xdotool key --clearmodifiers ctrl+a; sleep 0.2
@@ -340,7 +366,7 @@ target_has_text && record FAIL "Signed out: nothing is typed" "typed: \"$(target
 # --- 6. Quit ----------------------------------------------------------------------------
 quit_app && record PASS "Quits (SIGTERM, as at logout)" "" || { record FAIL "Quits (SIGTERM, as at logout)" "still running 20 s after SIGTERM"; pkill -9 -x "$APP_PROCESS"; }
 sleep 2
-if pgrep -f X11KeyServer > /dev/null; then record FAIL "Key listener exits with the app" "X11KeyServer still running"
+if [ -n "$(key_server_pids)" ]; then record FAIL "Key listener exits with the app" "X11KeyServer still running"
 else record PASS "Key listener exits with the app" ""; fi
 if [ -z "${APPIMAGE_EXTRACT_AND_RUN:-}" ]; then
   [ "$(appimage_mounts)" -eq 0 ] && record PASS "AppImage mount is cleaned up" "" \

@@ -14,8 +14,16 @@ if command -v dnf > /dev/null; then dnf install -y -q shadow-utils sudo > /dev/n
 if command -v apt-get > /dev/null; then apt-get update -qq > /dev/null 2>&1; DEBIAN_FRONTEND=noninteractive apt-get install -y -qq sudo passwd > /dev/null 2>&1; fi
 
 if [ -n "$HOST_INPUT_GID" ]; then
-  if getent group input > /dev/null; then groupmod -g "$HOST_INPUT_GID" input 2>/dev/null || true
+  # The image may use that gid for another group (Arch did: groupmod failed, the app's
+  # user wasn't in the group the device nodes have, and it couldn't read the keyboard).
+  other=$(getent group "$HOST_INPUT_GID" | cut -d: -f1)
+  if [ -n "$other" ] && [ "$other" != input ]; then
+    free=$(( HOST_INPUT_GID + 1000 )); while getent group "$free" > /dev/null; do free=$(( free + 1 )); done
+    groupmod -g "$free" "$other"
+  fi
+  if getent group input > /dev/null; then groupmod -g "$HOST_INPUT_GID" input
   else groupadd -g "$HOST_INPUT_GID" input; fi
+  echo "input group in the container: $(getent group input)${other:+ (moved $other off gid $HOST_INPUT_GID)}"
 fi
 id tester > /dev/null 2>&1 || useradd -m -u "$HOST_UID" -s /bin/bash tester
 echo 'tester ALL=(ALL) NOPASSWD: ALL' > /etc/sudoers.d/tester
