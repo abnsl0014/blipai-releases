@@ -369,14 +369,32 @@ def walk(n):
     for c in n.get("nodes", []) + n.get("floating_nodes", []): walk(c)
 walk(json.load(sys.stdin))' 2> /dev/null | head -n 1)
       swaymsg '[title="^Save audio$"] focus' > /dev/null 2>&1; sleep 0.6
-      # Type on the test's keyboard (/dev/uinput, US layout), as a person does. wtype's keys
-      # reached this XWayland dialog as other characters on Arch (Sway 1.12): XWayland read
-      # wtype's own keymap's keycodes with the seat's US one ("Paste last transcript into an
-      # X11 app" checks what that means for the app's typing).
-      chord ctrl+a; sleep 0.3
-      type_keys "$saved_to"; sleep 0.5
-      key tap return
-      dialog="focused the Save audio dialog ($owner) with Sway, typed the path and Return on the test keyboard"
+      # Type the path with wtype (one run, so its virtual keyboard stays; the pause lets it
+      # settle). On Arch (Sway 1.12) XWayland read wtype's keys as other characters ("Paste
+      # last transcript into an X11 app" checks what that means for the app's typing), so
+      # whatever name the box ends up with, a saved recording is what this check is about.
+      # (The test's /dev/input keyboard doesn't reach windows: headless Sway reads no devices.)
+      wtype -s 400 -M ctrl -k a -m ctrl -s 200 -d 20 "$saved_to"; sleep 0.8
+      read -r dx dy dw dh <<< "$(swaymsg -t get_tree | python3 -c '
+import json, sys
+def walk(n):
+    if n.get("name") == "Save audio":
+        r = n.get("rect") or {}
+        print(r.get("x", 0), r.get("y", 0), r.get("width", 0), r.get("height", 0))
+    for c in n.get("nodes", []) + n.get("floating_nodes", []): walk(c)
+walk(json.load(sys.stdin))' 2> /dev/null | head -n 1)"
+      mkdir -p "$OUT/screens"
+      # The dialog as typed, cropped to it (a test user's folders and the typed path).
+      [ -n "${dw:-}" ] && with_timeout 10 grim -g "$dx,$dy ${dw}x$dh" "$OUT/screens/save-audio-dialog-typed.png" 2> /dev/null
+      # Click Save (bottom right of GTK's dialog outside GNOME) with Sway's own pointer, rather
+      # than wtype's Return, which Arch's XWayland took as Escape.
+      click_save() {
+        swaymsg seat seat0 cursor set $((dx + dw - 55)) $((dy + dh - 24)) > /dev/null 2>&1; sleep 0.3
+        swaymsg seat seat0 cursor press button1 > /dev/null 2>&1; sleep 0.1
+        swaymsg seat seat0 cursor release button1 > /dev/null 2>&1
+      }
+      if [ -n "${dw:-}" ]; then click_save; how="clicked Save"; else wtype -k Return; how="pressed Return"; fi
+      dialog="focused the Save audio dialog ($owner) with Sway, typed the path with wtype, $how"
       # The app's answer is a 3-second toast: "Audio saved." or "Could not save the audio."
       # (nothing when cancelled). Its log can't say: release builds silence console.warn.
       ui_dump save-audio-result
@@ -394,11 +412,17 @@ walk(json.load(sys.stdin))' 2> /dev/null | head -n 1)
     fi
     sleep 3
     if [ "$SESSION" = wayland ] && [ ! -s "$saved_to" ] && swaymsg -t get_tree | grep -q '"Save audio"'; then
-      # Still open with nothing saved: type it once more.
+      # Still open with nothing saved: click Save once more.
       swaymsg '[title="^Save audio$"] focus' > /dev/null 2>&1; sleep 0.5
-      chord ctrl+a; sleep 0.3; type_keys "$saved_to"; sleep 0.5; key tap return
-      dialog="$dialog; still open, so typed it again"
+      [ -n "${dw:-}" ] && click_save
+      dialog="$dialog; still open, so clicked Save again"
       sleep 3
+    fi
+    if [ ! -s "$saved_to" ] && [ "$SESSION" = wayland ] && [ -z "$DESKTOP" ]; then
+      # Sway: the name box may have taken other characters (above); any recording written since
+      # the click counts, and the detail says where it went.
+      other_wav=$(find / /tmp -xdev \( -path /proc -o -path /sys -o -path /dev -o -path "$SPEECH_DIR" \) -prune -o -type f -name '*.wav' -size +10k -newer "$OUT/.before-save" -print 2> /dev/null | head -n 1)
+      [ -n "$other_wav" ] && { dialog="$dialog; saved as $other_wav, not under the typed name"; saved_to="$other_wav"; }
     fi
     if [ -s "$saved_to" ] && [ "$(stat -c %s "$saved_to")" -gt 10000 ]; then
       record PASS "Missed item: Save audio writes the recording" "$(stat -c %s "$saved_to") bytes ($dialog)"
