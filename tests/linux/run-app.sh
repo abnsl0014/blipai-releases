@@ -322,9 +322,11 @@ walk(json.load(sys.stdin))' 2> /dev/null | head -n 1)
       record PASS "Missed item: Save audio writes the recording" "$(stat -c %s "$saved_to") bytes ($dialog)"
     else
       # Saved under another name (a garbled path), or not at all?
-      other=$(find "$HOME" -maxdepth 3 -newer "$OUT/.before-save" -name '*.wav' 2> /dev/null | head -n 3 | paste -sd' ')
+      # Any file written since the click, whatever its name (a path typed with the wrong
+      # keymap wouldn't end in .wav), outside the app's own folders.
+      other=$(find "$HOME" -maxdepth 4 -type f -newer "$OUT/.before-save" -not -path '*/.config/*' -not -path '*/.cache/*' -not -path '*/.local/share/*' 2> /dev/null | head -n 4 | paste -sd' ')
       open_now=$( [ "$SESSION" = wayland ] && swaymsg -t get_tree | grep -q '"Save audio"' && echo "; the dialog is still open")
-      record FAIL "Missed item: Save audio writes the recording" "press: $(cut -c1-80 <<< "$pressed"); dialog: $(cut -c1-160 <<< "$dialog"); other new .wav files: ${other:-none}$open_now"
+      record FAIL "Missed item: Save audio writes the recording" "press: $(cut -c1-80 <<< "$pressed"); dialog: $(cut -c1-160 <<< "$dialog"); files written since the click: ${other:-none}$open_now"
     fi
     pressed=$(press "Retry")
     retried=""
