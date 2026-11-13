@@ -84,7 +84,7 @@ jobs:
           - { name: arch-x11,             runner: ubuntu-24.04, image: "archlinux:latest", session: x11 }
           - { name: arch-wayland,         runner: ubuntu-24.04, image: "archlinux:latest", session: wayland }
     runs-on: ${{ matrix.runner }}
-    timeout-minutes: 45
+    timeout-minutes: 75   # up to 30 of them waiting for a tag that's still building (select-release.sh)
     env:
       GH_TOKEN: ${{ github.token }}
       SESSION: ${{ matrix.session }}

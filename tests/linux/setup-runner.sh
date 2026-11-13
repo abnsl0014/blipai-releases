@@ -50,12 +50,17 @@ tail -n 5 "$log"
 # The website's Wayland step 1, word for word (content/articles/linux-setup.md). Its result
 # goes to website-wayland-tools.txt for user-steps.sh to report.
 out_dir="${OUT:-${RUNNER_TEMP:-/tmp}/blip-test}"; mkdir -p "$out_dir"
-case "${ID}:${ID_LIKE:-}" in
+case "${ID}:${ID_LIKE:-}:${VERSION_CODENAME:-}" in
+  debian:*:trixie)
+    # Debian 13 has ydotool only in backports; the guide adds them first (BlipAIWebsite#258).
+    echo 'deb http://deb.debian.org/debian trixie-backports main' > /etc/apt/sources.list.d/backports.list
+    apt-get update -qq >> "$out_dir/website-wayland-tools.log" 2>&1
+    cmd="apt install -y wtype wl-clipboard ydotool/trixie-backports" ;;
   ubuntu:*|debian:*|*:*debian*) cmd="apt install -y wtype wl-clipboard ydotool" ;;
   fedora:*) cmd="dnf install -y wtype wl-clipboard ydotool" ;;
   *) cmd="pacman -Syu --noconfirm wtype wl-clipboard ydotool" ;;
 esac
-$cmd > "$out_dir/website-wayland-tools.log" 2>&1
+$cmd >> "$out_dir/website-wayland-tools.log" 2>&1
 echo "$? sudo ${cmd/ -y/}" > "$out_dir/website-wayland-tools.txt"
 chown "$TEST_USER" "$out_dir" "$out_dir"/website-wayland-tools.* 2> /dev/null || true
 

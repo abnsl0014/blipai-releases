@@ -21,10 +21,19 @@ latest=$(retry gh release view -R "$REPO" --json tagName -q .tagName)
 [ -n "$TAG" ] || TAG="$latest"
 VERSION="${TAG#v}"
 
+APPIMAGE_FILE="Blip-AI-$VERSION.AppImage"   # what blipai.app/download/linux points to
+has_appimage() {
+  gh release view "$TAG" -R "$REPO" --json tagName,isDraft,publishedAt,assets > "$OUT/release.json" 2> /dev/null &&
+    jq -e --arg n "$APPIMAGE_FILE" '.assets[] | select(.name == $n)' "$OUT/release.json" > /dev/null
+}
+# A tag asked for by name may still be building (the test is often started right after
+# blip-ai-linux's build-linux.yml): wait up to 30 min for its AppImage.
+if [ "$TAG" != "$latest" ]; then
+  for i in $(seq 1 60); do has_appimage && break; [ "$i" = 1 ] && echo "waiting for $APPIMAGE_FILE on $TAG"; sleep 30; done
+fi
 retry gh release view "$TAG" -R "$REPO" --json tagName,isDraft,publishedAt,assets > "$OUT/release.json"
 record INFO "Release under test" "$TAG (draft: $(jq -r .isDraft "$OUT/release.json"), published: $(jq -r '.publishedAt // "not published"' "$OUT/release.json"))"
 
-APPIMAGE_FILE="Blip-AI-$VERSION.AppImage"   # what blipai.app/download/linux points to
 if ! jq -e --arg n "$APPIMAGE_FILE" '.assets[] | select(.name == $n)' "$OUT/release.json" > /dev/null; then
   record FAIL "Release has the Linux AppImage" "$TAG has no $APPIMAGE_FILE asset"
   exit 1
