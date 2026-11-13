@@ -166,7 +166,32 @@ quit_app() {  # SIGTERM to the main process, as a logout or `systemctl stop` sen
       "$(awk '{print $3}' /proc/$p/stat 2> /dev/null)" "$(cat /proc/$p/wchan 2> /dev/null)"
   done)
   ps -o pid,ppid,stat,etime,args -p "$(pgrep -d, -x "$APP_PROCESS")" > "$OUT/quit-left-$(date +%H%M%S).txt" 2>&1
+  hang_snapshot quit
   return 1
+}
+hang_snapshot() {  # hang_snapshot NAME → $OUT/hang-NAME-HHMMSS.txt, for a stuck app: every
+  # blip-ai process with each thread's state and kernel wait, the kernel stack of each thread
+  # that isn't idling in a poll or futex, and a gdb backtrace of every thread of each process
+  # that isn't one of Chromium's --type= helpers (Electron's symbols: electron-vX-linux-x64-symbols.zip).
+  local f="$OUT/hang-$1-$(date +%H%M%S).txt" p t w
+  {
+    ps -o pid,ppid,stat,etime,args -p "$(pgrep -d, -x "$APP_PROCESS")" 2>&1
+    for p in $(pgrep -x "$APP_PROCESS"); do
+      echo; echo "=== pid $p: $(tr '\0' ' ' < /proc/$p/cmdline 2> /dev/null | cut -c1-160)"
+      for t in /proc/$p/task/*; do
+        w=$(cat "$t/wchan" 2> /dev/null)
+        echo "tid ${t##*/} $(cat "$t/comm" 2> /dev/null) $(awk '{print $3}' "$t/stat" 2> /dev/null) $w"
+        case "$w" in futex_*|do_epoll_wait|ep_poll|do_sys_poll|poll_schedule_timeout*|do_select|hrtimer_nanosleep|do_nanosleep|0) ;;
+          *) sudo -n cat "$t/stack" 2> /dev/null | sed 's/^/    /' ;; esac
+      done
+      if ! tr '\0' ' ' < /proc/$p/cmdline 2> /dev/null | grep -q -- '--type=' && command -v gdb > /dev/null; then
+        echo "--- where blip-ai is loaded (to symbolize its frames)"; grep -m 2 -E '/blip-ai$' "/proc/$p/maps" 2> /dev/null
+        echo "--- gdb: thread apply all bt"
+        with_timeout 60 sudo -n gdb -p "$p" -batch -nx -ex 'set pagination off' -ex 'thread apply all bt 40' 2>&1 \
+          | grep -vE '^\[(New LWP|Thread debugging|Inferior)|^Using host libthread_db|^warning: (Could not|Unable)' | head -n 600
+      fi
+    done
+  } > "$f" 2>&1
 }
 app_windows() { with_timeout 20 "$PY" "$here_lib/atspi.py" windows "$APP_PROCESS" 2>/dev/null; }
 ui_dump() {  # ui_dump NAME [WINDOW] → $OUT/ui-NAME.txt

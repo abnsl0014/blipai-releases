@@ -21,7 +21,7 @@ case "${ID}:${ID_LIKE:-}" in
       sudo ca-certificates curl jq file procps psmisc iptables xdg-utils desktop-file-utils libglib2.0-bin \
       xvfb openbox xdotool x11-utils imagemagick sway wtype wl-clipboard grim xwayland \
       pulseaudio pulseaudio-utils dbus dbus-x11 at-spi2-core python3-pyatspi python3-gi \
-      gir1.2-gtk-3.0 python3-evdev espeak-ng libnss3 libgbm1 libxss1 libxtst6 \
+      gir1.2-gtk-3.0 python3-evdev espeak-ng gdb libnss3 libgbm1 libxss1 libxtst6 \
       "$(pick libgtk-3-0t64 libgtk-3-0)" "$(pick libasound2t64 libasound2)" >> "$log" 2>&1
     ;;
   fedora:*)
@@ -29,7 +29,7 @@ case "${ID}:${ID_LIKE:-}" in
       sudo ca-certificates curl jq file procps-ng psmisc iptables-nft xdg-utils desktop-file-utils \
       xorg-x11-server-Xvfb openbox xdotool xdpyinfo ImageMagick sway wtype wl-clipboard grim \
       xorg-x11-server-Xwayland pulseaudio pulseaudio-utils dbus-daemon dbus-x11 at-spi2-core \
-      python3-pyatspi python3-gobject gtk3 python3-evdev espeak-ng nss mesa-libgbm libXScrnSaver \
+      python3-pyatspi python3-gobject gtk3 python3-evdev espeak-ng gdb nss mesa-libgbm libXScrnSaver \
       libXtst alsa-lib shadow-utils util-linux >> "$log" 2>&1 \
     || dnf install -y --allowerasing --setopt=install_weak_deps=False --skip-unavailable \
       pulseaudio pulseaudio-utils >> "$log" 2>&1
@@ -39,7 +39,7 @@ case "${ID}:${ID_LIKE:-}" in
       sudo ca-certificates curl jq file procps-ng psmisc iptables xdg-utils desktop-file-utils \
       xorg-server-xvfb openbox xdotool xorg-xdpyinfo imagemagick sway wtype wl-clipboard grim \
       xorg-xwayland pulseaudio libpulse dbus at-spi2-core python-atspi python-gobject gtk3 \
-      python-evdev espeak-ng nss mesa libxss libxtst alsa-lib >> "$log" 2>&1
+      python-evdev espeak-ng gdb nss mesa libxss libxtst alsa-lib >> "$log" 2>&1
     ;;
   *) echo "unsupported distro: $ID" >&2; exit 1 ;;
 esac

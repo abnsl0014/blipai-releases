@@ -117,7 +117,7 @@ for i in $(seq 1 15); do
   sleep 2
 done
 if [ -n "$shown_at" ]; then record PASS "Shows onboarding on first launch" "windows: $windows (up within ${shown_at} s of launch)"
-else screenshot first-launch-late; record FAIL "Shows onboarding on first launch" "no window ${windows:+other than $windows }45 s after launch, though the app is running"; fi
+else screenshot first-launch-late; hang_snapshot first-launch; record FAIL "Shows onboarding on first launch" "no window ${windows:+other than $windows }45 s after launch, though the app is running"; fi
 ui_dump onboarding
 record INFO "Onboarding text" "$(grep -v '^== window' "$OUT/ui-onboarding.txt" | awk 'NF' | head -n 12 | paste -sd'|' | cut -c1-300)"
 
@@ -177,9 +177,16 @@ mounts_before=$(appimage_mounts)
 quit_app && record PASS "Quits after onboarding" "" || { record FAIL "Quits after onboarding" "still running 20 s after SIGTERM: ${QUIT_LEFT:-?}"; pkill -9 -x "$APP_PROCESS"; }
 sleep 2
 launch_app; sleep 15
+has_window() { [ -n "$(app_windows)" ]; }
+app_running && ! has_window && wait_until 30 has_window   # up within 15 s in most runs
 screenshot relaunch-signed-in
-if app_running; then record PASS "Relaunches signed in" "windows: $(app_windows)"
-else record FAIL "Relaunches signed in" "the app exited"; exit 0; fi
+windows=$(app_windows)
+if app_running && [ -n "$windows" ]; then record PASS "Relaunches signed in" "windows: $windows"
+elif app_running; then
+  # Running with no window (Ubuntu 24.04, once): the later checks can't pass, so say why here.
+  hang_snapshot relaunch
+  record FAIL "Relaunches signed in" "running, but no window 45 s after launch; the app logged: $(tail -n 2 "$OUT/app-stderr.log" | tr '\n' ' ' | cut -c1-160)"
+else record FAIL "Relaunches signed in" "the app exited: $(grep -v Fontconfig "$OUT/app-stderr.log" | tail -n 2 | tr '\n' ' ' | cut -c1-160)"; exit 0; fi
 ui_dump home
 
 # --- 4. Dictation -------------------------------------------------------------------
