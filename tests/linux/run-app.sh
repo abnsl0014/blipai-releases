@@ -289,7 +289,8 @@ if [ "$SESSION" = wayland ] && [ -z "$DESKTOP" ] && [ -n "$last_text" ]; then
       [ -n "$(tr -d '[:space:]' < "$x11_box" 2> /dev/null)" ] && { sleep 2; x11_text=$(cat "$x11_box"); break; }
       sleep 0.5
     done
-    TARGET_FILE="$x11_box" judge "Paste last transcript into an X11 app (XWayland)" "$last_text" "$x11_text" 90
+    TARGET_FILE="$x11_box" judge "Paste last transcript into an X11 app (XWayland)" "$last_text" "$x11_text" 90 \
+      || touch "$OUT/.xwayland-typing-broken"   # wtype's keys don't reach X11 windows as typed here
   else
     record SKIP "Paste last transcript into an X11 app (XWayland)" "the X11 text box didn't come up: $(head -c 200 "$OUT/target-x11.log")"
   fi
@@ -382,12 +383,6 @@ def walk(n):
     for c in n.get("nodes", []) + n.get("floating_nodes", []): walk(c)
 walk(json.load(sys.stdin))' 2> /dev/null | head -n 1)
       swaymsg '[title="^Save audio$"] focus' > /dev/null 2>&1; sleep 0.6
-      # Type the path with wtype (one run, so its virtual keyboard stays; the pause lets it
-      # settle). On Arch (Sway 1.12) XWayland read wtype's keys as other characters ("Paste
-      # last transcript into an X11 app" checks what that means for the app's typing), so
-      # whatever name the box ends up with, a saved recording is what this check is about.
-      # (The test's /dev/input keyboard doesn't reach windows: headless Sway reads no devices.)
-      wtype -s 400 -M ctrl -k a -m ctrl -s 200 -d 20 "$saved_to"; sleep 0.8
       read -r dx dy dw dh <<< "$(swaymsg -t get_tree | python3 -c '
 import json, sys
 def walk(n):
@@ -396,18 +391,25 @@ def walk(n):
         print(r.get("x", 0), r.get("y", 0), r.get("width", 0), r.get("height", 0))
     for c in n.get("nodes", []) + n.get("floating_nodes", []): walk(c)
 walk(json.load(sys.stdin))' 2> /dev/null | head -n 1)"
-      mkdir -p "$OUT/screens"
-      # The dialog as typed, cropped to it (a test user's folders and the typed path).
-      [ -n "${dw:-}" ] && with_timeout 10 grim -g "$dx,$dy ${dw}x$dh" "$OUT/screens/save-audio-dialog-typed.png" 2> /dev/null
-      # Click Save (bottom right of GTK's dialog outside GNOME) with Sway's own pointer, rather
-      # than wtype's Return, which Arch's XWayland took as Escape.
-      click_save() {
-        swaymsg seat seat0 cursor set $((dx + dw - 55)) $((dy + dh - 24)) > /dev/null 2>&1; sleep 0.3
-        swaymsg seat seat0 cursor press button1 > /dev/null 2>&1; sleep 0.1
-        swaymsg seat seat0 cursor release button1 > /dev/null 2>&1
-      }
-      if [ -n "${dw:-}" ]; then click_save; how="clicked Save"; else wtype -k Return; how="pressed Return"; fi
-      dialog="focused the Save audio dialog ($owner) with Sway, typed the path with wtype, $how"
+      if [ -f "$OUT/.xwayland-typing-broken" ]; then
+        # wtype's keys reach X11 windows as other keys here (Arch's Sway: the path arrived as
+        # "1234516576581930-45=…" and Return as Escape), and headless Sway has no pointer to
+        # click Save with. A person types with a real keyboard, so this check can't say
+        # anything about the app here; "Paste last transcript into an X11 app" covers the
+        # app's own typing. Close the dialog (Escape arrives as Escape) and move on.
+        wtype -k Escape; sleep 1
+        dialog="skip: wtype can't type into X11 windows on this Sway"
+      else
+        # Type the path with wtype (one run, so its virtual keyboard stays; the pause lets it
+        # settle), then Return. (The test's /dev/input keyboard doesn't reach windows: headless
+        # Sway reads no input devices; and with no pointer, a click on Save doesn't arrive.)
+        wtype -s 400 -M ctrl -k a -m ctrl -s 200 -d 20 "$saved_to"; sleep 0.8
+        mkdir -p "$OUT/screens"
+        # The dialog as typed, cropped to it (a test user's folders and the typed path).
+        [ -n "${dw:-}" ] && with_timeout 10 grim -g "$dx,$dy ${dw}x$dh" "$OUT/screens/save-audio-dialog-typed.png" 2> /dev/null
+        wtype -k Return
+        dialog="focused the Save audio dialog ($owner) with Sway, typed the path and Return with wtype"
+      fi
       # The app's answer is a 3-second toast: "Audio saved." or "Could not save the audio."
       # (nothing when cancelled). Its log can't say: release builds silence console.warn.
       ui_dump save-audio-result
@@ -425,12 +427,15 @@ walk(json.load(sys.stdin))' 2> /dev/null | head -n 1)"
     fi
     sleep 3
     if [ "$SESSION" = wayland ] && [ ! -s "$saved_to" ] && swaymsg -t get_tree | grep -q '"Save audio"'; then
-      # Still open with nothing saved: click Save once more.
+      # Still open with nothing saved: press Return once more.
       swaymsg '[title="^Save audio$"] focus' > /dev/null 2>&1; sleep 0.5
-      [ -n "${dw:-}" ] && click_save
-      dialog="$dialog; still open, so clicked Save again"
+      wtype -k Return
+      dialog="$dialog; still open, so pressed Return again"
       sleep 3
     fi
+    if [[ "$dialog" == skip:* ]]; then
+      record SKIP "Missed item: Save audio writes the recording" "${dialog#skip: } (the app's own typing into X11 apps is its own check)"
+    else
     if [ ! -s "$saved_to" ] && [ "$SESSION" = wayland ] && [ -z "$DESKTOP" ]; then
       # Sway: the name box may have taken other characters (above); any recording written since
       # the click counts, and the detail says where it went.
@@ -448,6 +453,7 @@ walk(json.load(sys.stdin))' 2> /dev/null | head -n 1)"
       other="${other:-none}; new .wav files anywhere: ${wavs:-none}; the app's working folder: $( (readlink /proc/$(app_main_pid)/cwd || sudo -n readlink /proc/$(app_main_pid)/cwd) 2> /dev/null)"
       open_now=$( [ "$SESSION" = wayland ] && swaymsg -t get_tree | grep -q '"Save audio"' && echo "; the dialog is still open")
       record FAIL "Missed item: Save audio writes the recording" "press: $(cut -c1-80 <<< "$pressed"); dialog: $(cut -c1-260 <<< "$dialog"); files written since the click: ${other}$open_now"
+    fi
     fi
     pressed=$(press "Retry")
     retried=""
