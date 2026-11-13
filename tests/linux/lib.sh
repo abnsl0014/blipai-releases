@@ -109,6 +109,10 @@ key() {  # key down|up|tap NAME
     sleep 0.04
   fi
 }
+type_keys() {  # Wayland: type_keys TEXT on the test's virtual keyboard (US layout), as a person types
+  timeout 15 sh -c 'echo "type $1" > "$2"' _ "$1" "$KEYS_FIFO" || echo "type: the virtual keyboard isn't listening" >&2
+  sleep $(( ${#1} / 15 + 1 ))
+}
 chord() {  # chord ctrl+super+space: press in order, release in reverse
   local k keys=() i
   IFS=+ read -ra keys <<< "$1"

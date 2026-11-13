@@ -1,7 +1,7 @@
 #!/usr/bin/python3
 """The dictation target: a GTK window with one text box, like any app a person types into.
 
-Usage: target.py FILE
+Usage: target.py FILE [TITLE]
   The box's text is mirrored to FILE on every change. Creating FILE.clear empties the box
   and brings the window forward (the test does it before each dictation). Every key,
   focus change and text change is logged to FILE.events (not the text itself), so a
@@ -30,7 +30,7 @@ def note(msg):
         pass
 
 
-win = Gtk.Window(title="Blip Test Target")
+win = Gtk.Window(title=sys.argv[2] if len(sys.argv) > 2 else "Blip Test Target")
 win.set_default_size(900, 500)
 view = Gtk.TextView()
 view.set_wrap_mode(Gtk.WrapMode.WORD)

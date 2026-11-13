@@ -263,6 +263,27 @@ pasted=$(wait_text 15)
 if [ -z "$last_text" ]; then record SKIP "Paste last transcript (Shift+Alt+Z)" "no earlier dictation to paste"
 else judge "Paste last transcript (Shift+Alt+Z)" "$last_text" "$pasted" 90; fi
 
+# 4e2. Sway: the same into an X11 app, which reaches the app's typing through XWayland. Many
+# apps still run that way (Electron apps without Wayland on, Steam, Java, Wine).
+if [ "$SESSION" = wayland ] && [ -z "$DESKTOP" ] && [ -n "$last_text" ]; then
+  x11_box="$TARGET_FILE.x11"
+  env GDK_BACKEND=x11 setsid "$PY" "$here/target.py" "$x11_box" "Blip Test Target X11" > "$OUT/target-x11.log" 2>&1 < /dev/null &
+  if wait_until 20 bash -c "swaymsg -t get_tree | grep -q '\"Blip Test Target X11\"'"; then
+    sleep 1; swaymsg '[title="^Blip Test Target X11$"] focus' > /dev/null 2>&1; sleep 0.8
+    chord shift+alt+z
+    x11_text=""
+    for i in $(seq 1 30); do
+      [ -n "$(tr -d '[:space:]' < "$x11_box" 2> /dev/null)" ] && { sleep 2; x11_text=$(cat "$x11_box"); break; }
+      sleep 0.5
+    done
+    TARGET_FILE="$x11_box" judge "Paste last transcript into an X11 app (XWayland)" "$last_text" "$x11_text" 90
+  else
+    record SKIP "Paste last transcript into an X11 app (XWayland)" "the X11 text box didn't come up: $(head -c 200 "$OUT/target-x11.log")"
+  fi
+  pkill -f "Blip Test Target X11" 2> /dev/null
+  [ -f "$x11_box.events" ] && cp "$x11_box.events" "$OUT/target-x11-box-events.txt"
+fi
+
 record SKIP "Dictates after the speakers or default mic change" "tested on Mac; this runner has one virtual sound card"
 record SKIP "First dictation after waking from sleep" "a runner can't sleep and wake; check by hand"
 record SKIP "Real Bluetooth or USB mic plugged in or out" "no such hardware on a runner"
@@ -348,24 +369,14 @@ def walk(n):
     for c in n.get("nodes", []) + n.get("floating_nodes", []): walk(c)
 walk(json.load(sys.stdin))' 2> /dev/null | head -n 1)
       swaymsg '[title="^Save audio$"] focus' > /dev/null 2>&1; sleep 0.6
-      # A short pause between keys, as a person types: on Arch the path typed at full
-      # speed didn't end up where the dialog saved.
-      wtype -s 400 -M ctrl -k a -m ctrl -s 200 -d 20 "$saved_to"; sleep 0.8
-      # The dialog as typed, cropped to it (a test user's folders and the typed path).
-      rect=$(swaymsg -t get_tree | python3 -c '
-import json, sys
-def walk(n):
-    if n.get("name") == "Save audio":
-        r = n.get("rect") or {}
-        print("%d,%d %dx%d" % (r.get("x", 0), r.get("y", 0), r.get("width", 0), r.get("height", 0)))
-    for c in n.get("nodes", []) + n.get("floating_nodes", []): walk(c)
-walk(json.load(sys.stdin))' 2> /dev/null | head -n 1)
-      mkdir -p "$OUT/screens"
-      [ -n "$rect" ] && with_timeout 10 grim -g "$rect" "$OUT/screens/save-audio-dialog-typed.png" 2> /dev/null
-      # wtype's Return: XTEST (xdotool) doesn't reach XWayland windows under Sway (Fedora's
-      # and Arch's dialogs stayed open after it).
-      wtype -k Return
-      dialog="focused the Save audio dialog ($owner) with Sway, typed the path with wtype, pressed Return"
+      # Type on the test's keyboard (/dev/uinput, US layout), as a person does. wtype's keys
+      # reached this XWayland dialog as other characters on Arch (Sway 1.12): XWayland read
+      # wtype's own keymap's keycodes with the seat's US one ("Paste last transcript into an
+      # X11 app" checks what that means for the app's typing).
+      chord ctrl+a; sleep 0.3
+      type_keys "$saved_to"; sleep 0.5
+      key tap return
+      dialog="focused the Save audio dialog ($owner) with Sway, typed the path and Return on the test keyboard"
       # The app's answer is a 3-second toast: "Audio saved." or "Could not save the audio."
       # (nothing when cancelled). Its log can't say: release builds silence console.warn.
       ui_dump save-audio-result
@@ -385,7 +396,7 @@ walk(json.load(sys.stdin))' 2> /dev/null | head -n 1)
     if [ "$SESSION" = wayland ] && [ ! -s "$saved_to" ] && swaymsg -t get_tree | grep -q '"Save audio"'; then
       # Still open with nothing saved: type it once more.
       swaymsg '[title="^Save audio$"] focus' > /dev/null 2>&1; sleep 0.5
-      wtype -s 300 -M ctrl -k a -m ctrl -s 200 -d 20 "$saved_to"; sleep 0.8; wtype -k Return
+      chord ctrl+a; sleep 0.3; type_keys "$saved_to"; sleep 0.5; key tap return
       dialog="$dialog; still open, so typed it again"
       sleep 3
     fi

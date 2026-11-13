@@ -4,7 +4,8 @@
 
   keys.py serve FIFO     create the keyboard ("Blip Test Keyboard", through /dev/uinput)
                          and press keys as commands arrive on FIFO, one per line:
-                         "down ctrl", "up super", "tap escape" (FIFO "-": standard input)
+                         "down ctrl", "up super", "tap escape", "type /some/path.wav"
+                         (FIFO "-": standard input)
   keys.py gnome FIFO     GNOME jobs: read the same commands from FIFO, press each key on
                          GNOME Shell's seat too (the test's shell extension), and pass the
                          line on to standard output, for `keys.py serve -` running as root.
@@ -25,6 +26,16 @@ KEYS = {
     "alt": e.KEY_LEFTALT, "space": e.KEY_SPACE, "escape": e.KEY_ESC, "return": e.KEY_ENTER,
     "z": e.KEY_Z, "v": e.KEY_V, "a": e.KEY_A, "tab": e.KEY_TAB,
 }
+
+
+def keys_for(ch):
+    """(keycode, shift) for one character on a US keyboard, as a person types it."""
+    if ch.isascii() and ch.isalpha():
+        return getattr(e, "KEY_" + ch.upper()), ch.isupper()
+    if ch.isascii() and ch.isdigit():
+        return getattr(e, "KEY_" + ch), False
+    return {"/": (e.KEY_SLASH, False), "-": (e.KEY_MINUS, False), "_": (e.KEY_MINUS, True),
+            ".": (e.KEY_DOT, False), " ": (e.KEY_SPACE, False), ",": (e.KEY_COMMA, False)}.get(ch, (None, False))
 
 
 def node_of(ui):
@@ -82,6 +93,20 @@ def main():
     ui = UInput({e.EV_KEY: sorted(set(KEYS.values()))}, name="Blip Test Keyboard")
     print("ready", node_of(ui), flush=True)
     for line in lines(fifo):
+        if line.startswith("type "):  # "type TEXT": each character as a key press, US layout
+            for ch in line[5:].rstrip("\n"):
+                code, shift = keys_for(ch)
+                if code is None:
+                    continue
+                if shift:
+                    ui.write(e.EV_KEY, e.KEY_LEFTSHIFT, 1); ui.syn()
+                ui.write(e.EV_KEY, code, 1); ui.syn()
+                time.sleep(0.02)
+                ui.write(e.EV_KEY, code, 0); ui.syn()
+                if shift:
+                    ui.write(e.EV_KEY, e.KEY_LEFTSHIFT, 0); ui.syn()
+                time.sleep(0.03)
+            continue
         parts = line.split()
         if len(parts) != 2 or parts[1] not in KEYS:
             continue
