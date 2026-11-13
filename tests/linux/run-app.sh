@@ -303,13 +303,15 @@ if app_has 'data-missed-action'; then
     # box and presses Enter. (The app is an X11 client in both sessions, directly or
     # through XWayland, so xdotool reaches it; AT-SPI doesn't see GTK's dialog here.)
     dialog=""
-    if [ -n "$DESKTOP" ] && wait_until 15 bash -c "'$PY' '$here/atspi.py' windows portal | grep -q 'Save audio'"; then
+    # The desktop's file chooser: the portal's own window (GNOME 46, KDE), or since GNOME 47
+    # the portal hands it to Nautilus (Fedora 42's GNOME 48), which takes a while to start.
+    if [ -n "$DESKTOP" ] && wait_until 40 bash -c "'$PY' '$here/atspi.py' windows 'portal|nautilus' | grep -q 'Save audio'"; then
       # GNOME and KDE: Electron asks the desktop's file chooser portal; its dialog is the
       # desktop's own (GTK 4 or Qt), which AT-SPI reaches: type the path, press Save.
       # Press Save with the name it suggests, as most people do, and take where it went
       # from the portal's answer. (Typing a path over AT-SPI didn't take in KDE's Qt dialog:
       # it saved under the suggested name, run 43420941538.)
-      dialog="desktop's file chooser: $(with_timeout 40 "$PY" "$here/atspi.py" press portal Save "Save audio" 2>&1)"
+      dialog="desktop's file chooser: $(with_timeout 40 "$PY" "$here/atspi.py" press 'portal|nautilus' Save "Save audio" 2>&1)"
       sleep 3
       chosen=$("$PY" - "$OUT/portal-dbus.log" "$(stat -c %Y "$OUT/.before-save")" << 'PY'
 import re, sys

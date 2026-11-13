@@ -12,7 +12,8 @@ readers use). The app is started with --force-renderer-accessibility so Chromium
                                  that grant access (GNOME: "Allow Remote Interaction", without
                                  which Share stays greyed out), keep its defaults otherwise
                                  ("Remember This Selection"), press Share / Approve / Allow
-APP is matched against the accessible application name, case-insensitively, as a substring.
+APP is matched against the accessible application name, case-insensitively, as a substring
+("a|b": either).
 """
 import sys
 
@@ -26,7 +27,7 @@ def apps(name):
             app = desktop.getChildAtIndex(i)
         except Exception:
             continue
-        if app is not None and name.lower() in (app.name or "").lower():
+        if app is not None and any(n.lower() in (app.name or "").lower() for n in name.split("|")):
             yield app
 
 

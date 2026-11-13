@@ -59,8 +59,9 @@ if [ "$status" -eq 0 ] && [ -n "${DESKTOP:-}" ]; then
       apt-get install -y -qq --no-install-recommends gnome-shell xdg-desktop-portal xdg-desktop-portal-gnome \
         dconf-cli xwayland >> "$log" 2>&1 ;;
     gnome:fedora:*)
+      # Nautilus too: since GNOME 47 the GNOME portal's file chooser is Nautilus's window.
       dnf install -y --setopt=install_weak_deps=False gnome-shell xdg-desktop-portal xdg-desktop-portal-gnome \
-        xorg-x11-server-Xwayland mesa-dri-drivers dconf >> "$log" 2>&1 ;;
+        nautilus xorg-x11-server-Xwayland mesa-dri-drivers dconf >> "$log" 2>&1 ;;
     kde:fedora:*)
       dnf install -y --setopt=install_weak_deps=False kwin xdg-desktop-portal xdg-desktop-portal-kde \
         plasma-integration breeze-icon-theme kf6-kservice kde-cli-tools redhat-menus pipewire wireplumber \
