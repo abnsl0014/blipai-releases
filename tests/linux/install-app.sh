@@ -50,6 +50,9 @@ else
   else
     record INFO "AppImage mounts itself after the guide's FUSE fix" "still no ($fuse); running it with APPIMAGE_EXTRACT_AND_RUN=1, the guide's other fallback"
     env_out APPIMAGE_EXTRACT_AND_RUN 1
+    # Keep the extracted copy when an instance exits: a second launch (sign-in link) would
+    # otherwise delete files under the running primary.
+    env_out NO_CLEANUP 1
   fi
 fi
 

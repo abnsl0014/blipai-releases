@@ -297,8 +297,14 @@ def walk(n):
     for c in n.get("nodes", []) + n.get("floating_nodes", []): walk(c)
 walk(json.load(sys.stdin))' 2> /dev/null | head -n 1)
       swaymsg '[title="^Save audio$"] focus' > /dev/null 2>&1; sleep 0.6
-      wtype -s 400 -M ctrl -k a -m ctrl -s 200 "$saved_to" -s 300 -k Return
-      dialog="focused the Save audio dialog ($owner) with Sway, typed the path with wtype and pressed Enter"
+      wtype -s 400 -M ctrl -k a -m ctrl -s 200 "$saved_to"; sleep 0.5
+      # Enter through XTEST (XWayland's own input path for the X window Sway focused):
+      # on Arch the dialog closed after wtype's Return without saving anything, as if
+      # cancelled. Fall back to wtype's Return if the dialog is still open.
+      xdotool key Return; sleep 1.5
+      enter="Enter via xdotool"
+      if swaymsg -t get_tree | grep -q '"Save audio"'; then wtype -k Return; enter="$enter, then wtype's Return"; fi
+      dialog="focused the Save audio dialog ($owner) with Sway, typed the path with wtype, $enter"
     elif wait_until 10 xdotool search --name '^Save audio$'; then
       wid=$(xdotool search --name '^Save audio$' | head -n 1)
       xdotool windowactivate --sync "$wid" > /dev/null 2>&1; sleep 0.6
