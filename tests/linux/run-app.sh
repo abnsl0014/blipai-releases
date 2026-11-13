@@ -54,6 +54,15 @@ key_listener() {  # prints how the app listens for the hotkey, or nothing
     [ -n "$k" ] && echo "X11KeyServer running (pid $k: $(readlink /proc/$k/exe 2> /dev/null))"
   fi
 }
+mount_holders() {  # "; held by: pid comm (cwd or open file)" for what keeps the AppImage mounted
+  local m p hit
+  for m in $(mount | grep -o '/tmp/.mount_Blip[^ ]*'); do
+    for p in /proc/[0-9]*; do
+      hit=$( { readlink "$p/cwd"; readlink "$p/exe"; ls -l "$p/fd" 2> /dev/null | awk '{print $NF}'; } 2> /dev/null | grep -m1 -F "$m")
+      [ -n "$hit" ] && printf '; held by %s %s (%s)' "${p#/proc/}" "$(cat "$p/comm" 2> /dev/null)" "${hit#$m}"
+    done
+  done
+}
 appimage_mounts() { mount 2>/dev/null | grep -c '/tmp/.mount_Blip' ; }
 newest_record() {  # "<status> <timestamp> <text>" of the newest history item
   python3 -c '
@@ -413,7 +422,7 @@ if [ -n "$(key_server_pids)" ]; then record FAIL "Key listener exits with the ap
 else record PASS "Key listener exits with the app" ""; fi
 if [ -z "${APPIMAGE_EXTRACT_AND_RUN:-}" ]; then
   [ "$(appimage_mounts)" -eq 0 ] && record PASS "AppImage mount is cleaned up" "" \
-    || record FAIL "AppImage mount is cleaned up" "$(mount | grep /tmp/.mount_Blip | cut -c1-120)"
+    || record FAIL "AppImage mount is cleaned up" "$(mount | grep /tmp/.mount_Blip | cut -c1-120)$( [ -n "$DESKTOP" ] && mount_holders)"
 fi
 
 # Relaunching with that ended session asks the user to sign in again.

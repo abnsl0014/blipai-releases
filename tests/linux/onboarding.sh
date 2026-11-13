@@ -72,7 +72,8 @@ onboarding_walk() {
 }
 
 grant_paste_permission() {
-  local dlg how said deadline
+  local dlg how said deadline FAIL=FAIL
+  [ -f "$OUT/.portal-broken" ] && FAIL=HARNESS   # the portal didn't answer the test's own probe either
   press "Allow" > "$OUT/onboarding-allow-press.txt"
   # The desktop's dialog (xdg-desktop-portal-gnome's "Remote Desktop" / -kde's "Remote Control").
   dlg=""
@@ -82,9 +83,9 @@ grant_paste_permission() {
   if [ -z "$dlg" ]; then
     said=$(ui_now onboarding-allow | grep -iE 'window that opens|didn.t work|cancel|done' | head -n 2 | paste -sd'|')
     if grep -q 'RemoteDesktop' "$OUT/portal-dbus.log" 2> /dev/null; then
-      record FAIL "Onboarding: Allow opens the desktop's paste dialog" "the app asked the RemoteDesktop portal but no dialog appeared within 30 s; onboarding says: ${said:-nothing}; portal calls: $(grep -oE 'member=(CreateSession|SelectDevices|Start)' "$OUT/portal-dbus.log" | sort | uniq -c | xargs)"
+      record $FAIL "Onboarding: Allow opens the desktop's paste dialog" "the app asked the RemoteDesktop portal but no dialog appeared within 30 s; onboarding says: ${said:-nothing}; portal calls: $(grep -oE 'member=(CreateSession|SelectDevices|Start)' "$OUT/portal-dbus.log" | sort | uniq -c | xargs)"
     else
-      record FAIL "Onboarding: Allow opens the desktop's paste dialog" "the app made no RemoteDesktop portal call within 30 s of Allow ($(cat "$OUT/onboarding-allow-press.txt")); onboarding says: ${said:-nothing}"
+      record $FAIL "Onboarding: Allow opens the desktop's paste dialog" "the app made no RemoteDesktop portal call within 30 s of Allow ($(cat "$OUT/onboarding-allow-press.txt")); onboarding says: ${said:-nothing}"
     fi
     return 1
   fi
@@ -100,7 +101,7 @@ grant_paste_permission() {
   if wait_until 20 rd_token_file; then
     record PASS "Paste permission granted" "the portal granted the keyboard and the app saved its restore token; onboarding: $(ui_now onboarding-granted | grep -m1 -iE 'done|speak to test' )"
   else
-    record FAIL "Paste permission granted" "no restore token saved 20 s after \"$how\"; onboarding says: $(ui_now onboarding-granted | grep -iE 'window that opens|didn.t work|cancel|done' | head -n 2 | paste -sd'|'); portal responses: $(grep -A1 'member=Response' "$OUT/portal-dbus.log" | grep -oE 'uint32 [0-9]+' | paste -sd' ')"
+    record $FAIL "Paste permission granted" "no restore token saved 20 s after \"$how\"; onboarding says: $(ui_now onboarding-granted | grep -iE 'window that opens|didn.t work|cancel|done' | head -n 2 | paste -sd'|'); portal responses: $(grep -A1 'member=Response' "$OUT/portal-dbus.log" | grep -oE 'uint32 [0-9]+' | paste -sd' ')"
     return 1
   fi
 }

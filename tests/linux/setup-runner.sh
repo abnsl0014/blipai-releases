@@ -51,7 +51,8 @@ status=$?
 # Plasma install has that they need: plasma-integration (KWin crashed at start in a full
 # session without it), PipeWire (KWin offers the portal its screencast protocol only with it,
 # and the portal refuses a RemoteDesktop session without that), the XDG applications menu
-# and KDE's service cache (KWin finds which programs may use its privileged protocols there).
+# and KDE's service cache (KWin finds which programs may use its privileged protocols there),
+# and kde-open, which xdg-open uses on Plasma (it opens the sign-in link).
 if [ "$status" -eq 0 ] && [ -n "${DESKTOP:-}" ]; then
   case "${DESKTOP}:${ID}:${ID_LIKE:-}" in
     gnome:ubuntu:*|gnome:debian:*|gnome:*:*debian*)
@@ -62,7 +63,7 @@ if [ "$status" -eq 0 ] && [ -n "${DESKTOP:-}" ]; then
         xorg-x11-server-Xwayland mesa-dri-drivers dconf >> "$log" 2>&1 ;;
     kde:fedora:*)
       dnf install -y --setopt=install_weak_deps=False kwin xdg-desktop-portal xdg-desktop-portal-kde \
-        plasma-integration breeze-icon-theme kf6-kservice redhat-menus pipewire wireplumber \
+        plasma-integration breeze-icon-theme kf6-kservice kde-cli-tools redhat-menus pipewire wireplumber \
         xorg-x11-server-Xwayland mesa-dri-drivers >> "$log" 2>&1 ;;
     *) echo "no $DESKTOP setup for $ID" >> "$log"; false ;;
   esac

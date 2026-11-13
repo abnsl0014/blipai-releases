@@ -24,7 +24,19 @@ if [ -z "$rt" ] || [ ! -w "$rt" ]; then rt="$RUNNER_TEMP/xdg-runtime"; mkdir -p 
 env_out XDG_RUNTIME_DIR "$rt"
 
 # D-Bus session bus, and accessibility switched on (Chromium reads org.a11y.Status).
-eval "$(dbus-launch --sh-syntax)"
+if [ -n "${DESKTOP:-}" ]; then
+  # GNOME and KDE logins get their session bus from systemd, at a path
+  # (unix:path=/run/user/UID/bus). dbus-launch's is an abstract socket, which the app's
+  # D-Bus library (dbus-next) reaches only through a native module the AppImage doesn't
+  # ship, so its portal paste never got as far as the bus. Use a path, as those logins do.
+  bus="$XDG_RUNTIME_DIR/bus"; [ -e "$bus" ] && bus="$XDG_RUNTIME_DIR/bus-blip-test"
+  # In the foreground (detached), so the services it starts (the portals) log to session-bus.log.
+  setsid dbus-daemon --session --address="unix:path=$bus" --nofork > "$OUT/session-bus.log" 2>&1 < /dev/null &
+  export DBUS_SESSION_BUS_ADDRESS="unix:path=$bus"
+  wait_until 10 test -S "$bus"
+else
+  eval "$(dbus-launch --sh-syntax)"
+fi
 env_out DBUS_SESSION_BUS_ADDRESS "$DBUS_SESSION_BUS_ADDRESS"
 env_out NO_AT_BRIDGE 0
 env_out ACCESSIBILITY_ENABLED 1
@@ -63,6 +75,7 @@ if [ -n "${DESKTOP:-}" ]; then
     if [ "$ID" = ubuntu ]; then env_out XDG_CURRENT_DESKTOP ubuntu:GNOME; env_out XDG_SESSION_DESKTOP ubuntu
     else env_out XDG_CURRENT_DESKTOP GNOME; env_out XDG_SESSION_DESKTOP gnome; fi
     env_out DESKTOP_SESSION "$XDG_SESSION_DESKTOP"
+    env_out GNOME_DESKTOP_SESSION_ID this-is-deprecated   # gnome-session sets it; Ubuntu's xdg-open 1.1.3 knows GNOME by it
     # Screen readers' setting (GNOME Shell and GTK fill the accessibility tree), no screen
     # lock in a headless session, and the test's stand-in for the keyboard and mouse
     # (gnome-shell-extension/: a keyboard on the seat, focus by title, screenshots).
@@ -118,12 +131,20 @@ if [ -n "${DESKTOP:-}" ]; then
   fi
   # The portals start on demand, with this session's environment.
   dbus-update-activation-environment XDG_CURRENT_DESKTOP XDG_SESSION_DESKTOP XDG_SESSION_TYPE DESKTOP_SESSION \
-    WAYLAND_DISPLAY DISPLAY ${XAUTHORITY:+XAUTHORITY} XDG_RUNTIME_DIR ${KDE_FULL_SESSION:+KDE_FULL_SESSION KDE_SESSION_VERSION QT_LINUX_ACCESSIBILITY_ALWAYS_ON} > /dev/null 2>&1
+    WAYLAND_DISPLAY DISPLAY ${XAUTHORITY:+XAUTHORITY} XDG_RUNTIME_DIR ${GNOME_DESKTOP_SESSION_ID:+GNOME_DESKTOP_SESSION_ID} ${KDE_FULL_SESSION:+KDE_FULL_SESSION KDE_SESSION_VERSION QT_LINUX_ACCESSIBILITY_ALWAYS_ON} > /dev/null 2>&1
   # What the app says over D-Bus that the test can't see in its silent release log: the
   # RemoteDesktop portal calls (the paste path) and its notifications (the clipboard fallback).
   setsid dbus-monitor --session "interface='org.freedesktop.portal.RemoteDesktop'" \
     "type='signal',interface='org.freedesktop.portal.Request',member='Response'" \
     "interface='org.freedesktop.Notifications',member='Notify'" > "$OUT/portal-dbus.log" 2>&1 < /dev/null &
+  # Does the desktop's RemoteDesktop portal answer? (No dialog for this step.) If it
+  # doesn't, the app's paste permission can't work here, and that's the harness's problem.
+  if probe=$(with_timeout 70 "$PY" "$here/portal-probe.py" 60 2>&1); then
+    record PASS "Session: the desktop's RemoteDesktop portal answers" "$probe"
+  else
+    touch "$OUT/.portal-broken"   # paste checks can't blame the app then (lib.sh, onboarding.sh)
+    record HARNESS "Session: the desktop's RemoteDesktop portal answers" "$probe; $(grep -iE 'portal|error|warn' "$OUT/session-bus.log" | tail -n 3 | paste -sd' ' | cut -c1-250)"
+  fi
   start_virtual_keyboard
   if wait_until 10 grep -q 'ready /dev/input/event' "$OUT/keys.log"; then
     record PASS "Virtual keyboard on /dev/input" "$(head -n 1 "$OUT/keys.log")$( [ "$DESKTOP" = gnome ] && echo "; its keys reach GNOME Shell too")"

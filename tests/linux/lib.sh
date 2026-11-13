@@ -258,15 +258,18 @@ judge() {  # judge CHECK EXPECTED ACTUAL [MIN_RECALL%]
 }
 judge_plain() {
   local name="$1" expected="$2" actual="$3" min="$4" extra="$5" recall shown
+  # GNOME and KDE: with a portal that doesn't answer (session.sh's probe), nothing the
+  # app does can paste; say so rather than blame it.
+  local FAIL=FAIL; [ -n "$DESKTOP" ] && [ -f "$OUT/.portal-broken" ] && { FAIL=HARNESS; extra="$extra (the desktop's portal didn't answer the test's own probe)"; }
   if [ -z "$(printf '%s' "$actual" | tr -d '[:space:]')" ]; then
     local got wt=""; got=$(tail -n 6 "$TARGET_FILE.events" 2>/dev/null | cut -c14- | paste -sd, - | cut -c1-200)
     # On Wayland, say whether the app typed at all, and whether its overlay was up then.
     [ "$SESSION" = wayland ] && [ -s "$OUT/wtype-calls.log" ] && wt="; last wtype call: $(tail -n 1 "$OUT/wtype-calls.log")"
-    record FAIL "$name" "nothing was typed into the text box within 30 s; the box got: ${got:-nothing}$wt$extra"
+    record $FAIL "$name" "nothing was typed into the text box within 30 s; the box got: ${got:-nothing}$wt$extra"
     return 1
   fi
   recall=$(word_recall "$actual" "$expected")
   shown=$(printf '%s' "$actual" | tr '\n' ' ' | cut -c1-140)
   if [ "$recall" -ge "$min" ]; then record PASS "$name" "$recall% of the spoken words; typed: \"$shown\"$extra"
-  else record FAIL "$name" "$recall% of the spoken words (need $min%); typed: \"$shown\"$extra"; return 1; fi
+  else record $FAIL "$name" "$recall% of the spoken words (need $min%); typed: \"$shown\"$extra"; return 1; fi
 }
