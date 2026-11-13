@@ -1,0 +1,126 @@
+# Tests a Blip AI Linux release the way a user gets it, on every distro the website names
+# (Ubuntu, Debian, Fedora, Arch) and both session types (X11 and Wayland): install the
+# AppImage as the website's Linux guide says, launch it, sign in through the blipai://
+# link, dictate into a text box through a virtual microphone with synthetic key presses,
+# and check the auto-updater's files. Scripts and details: tests/linux/README.md.
+#
+# Ubuntu 24.04 and 22.04 run on GitHub's own Ubuntu runners; Debian 13, Fedora 42 and Arch
+# run in containers on an Ubuntu runner, with its /dev (FUSE, input devices).
+#
+# Runs when a release is published, by hand (Run workflow, optional tag; drafts work),
+# and when the test itself changes (a "Test-tag: v0.5.10" line in the commit message
+# picks the tag). Free on this public repo. Sign-in and dictation need the
+# BLIP_TEST_EMAIL and BLIP_TEST_PASSWORD secrets.
+name: Linux release test
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag to test, e.g. v0.5.10 (drafts work). Empty = the latest published release."
+        required: false
+        default: ""
+  push:
+    paths:
+      - "tests/linux/**"
+      - ".github/workflows/linux-release-test.yml"
+
+permissions:
+  # Write only because GitHub lists draft releases only to tokens that can push.
+  # Nothing in this workflow writes to the repo.
+  contents: write
+
+# One run at a time: every run signs in to the same test account.
+concurrency:
+  group: linux-release-test
+  cancel-in-progress: false
+
+jobs:
+  # The test's voice: the phrases in tests/linux/phrases.txt, spoken by macOS's `say` (the
+  # voice the Mac test uses) and saved as WAV files the Linux jobs play into their
+  # virtual microphone.
+  voice:
+    runs-on: macos-15
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Render the phrases
+        run: |
+          mkdir -p speech
+          while IFS= read -r text; do
+            [ -n "$text" ] || continue
+            name=$(printf '%s' "$text" | shasum | cut -c1-12)
+            say -o "speech/$name.aiff" "$text"
+            afconvert -f WAVE -d LEI16@22050 "speech/$name.aiff" "speech/$name.wav"
+            rm "speech/$name.aiff"
+          done < tests/linux/phrases.txt
+          ls -la speech
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux-test-speech
+          path: speech
+          retention-days: 3
+
+  linux:
+    needs: voice
+    name: ${{ matrix.name }}
+    strategy:
+      fail-fast: false
+      max-parallel: 5
+      matrix:
+        include:
+          - { name: ubuntu-24.04-x11,     runner: ubuntu-24.04, image: "",                session: x11 }
+          - { name: ubuntu-24.04-wayland, runner: ubuntu-24.04, image: "",                session: wayland }
+          - { name: ubuntu-22.04-x11,     runner: ubuntu-22.04, image: "",                session: x11 }
+          - { name: ubuntu-22.04-wayland, runner: ubuntu-22.04, image: "",                session: wayland }
+          - { name: debian-13-x11,        runner: ubuntu-24.04, image: "debian:trixie",   session: x11 }
+          - { name: debian-13-wayland,    runner: ubuntu-24.04, image: "debian:trixie",   session: wayland }
+          - { name: fedora-42-x11,        runner: ubuntu-24.04, image: "fedora:42",       session: x11 }
+          - { name: fedora-42-wayland,    runner: ubuntu-24.04, image: "fedora:42",       session: wayland }
+          - { name: arch-x11,             runner: ubuntu-24.04, image: "archlinux:latest", session: x11 }
+          - { name: arch-wayland,         runner: ubuntu-24.04, image: "archlinux:latest", session: wayland }
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 45
+    env:
+      GH_TOKEN: ${{ github.token }}
+      SESSION: ${{ matrix.session }}
+      IMAGE: ${{ matrix.image }}
+      OUT: ${{ runner.temp }}/blip-test
+      SPEECH_DIR: ${{ runner.temp }}/speech
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: linux-test-speech
+          path: ${{ runner.temp }}/speech
+
+      - name: Pick the release and download its Linux files
+        env:
+          REQUESTED_TAG: ${{ github.event.release.tag_name || inputs.tag }}
+          COMMIT_MESSAGE: ${{ github.event.head_commit.message }}
+        run: bash tests/linux/select-release.sh
+
+      - name: Check the updater files (latest-linux.yml, size, sha512)
+        run: bash tests/linux/verify-release.sh
+
+      - name: Install, launch, sign in, dictate, quit
+        timeout-minutes: 30
+        env:
+          BLIP_TEST_EMAIL: ${{ secrets.BLIP_TEST_EMAIL }}
+          BLIP_TEST_PASSWORD: ${{ secrets.BLIP_TEST_PASSWORD }}
+        run: bash tests/linux/run.sh
+
+      - name: Report
+        if: always()
+        run: bash tests/linux/report.sh
+
+      - name: Upload screenshots and logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-release-test-${{ matrix.name }}
+          path: ${{ runner.temp }}/blip-test
+          retention-days: 14
