@@ -1,0 +1,6 @@
+{
+  "uuid": "blip-test@blipai.app",
+  "name": "Blip release test helper",
+  "description": "Test harness only: the keyboard and mouse of a person at a headless GNOME Shell. A keyboard on the seat (headless mutter has none), window focus by title, closing the overview, and screenshots, over D-Bus at org.gnome.Shell /app/blipai/TestShell.",
+  "shell-version": ["45", "46", "47", "48", "49", "50"]
+}

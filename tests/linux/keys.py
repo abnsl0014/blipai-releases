@@ -4,7 +4,12 @@
 
   keys.py serve FIFO     create the keyboard ("Blip Test Keyboard", through /dev/uinput)
                          and press keys as commands arrive on FIFO, one per line:
-                         "down ctrl", "up super", "tap escape"
+                         "down ctrl", "up super", "tap escape" (FIFO "-": standard input)
+  keys.py gnome FIFO     GNOME jobs: read the same commands from FIFO, press each key on
+                         GNOME Shell's seat too (the test's shell extension), and pass the
+                         line on to standard output, for `keys.py serve -` running as root.
+                         A physical keyboard reaches both the app (/dev/input) and the
+                         desktop; headless GNOME Shell reads no input devices of its own.
 The keyboard stays plugged in for the whole run: the app opens input devices when it
 starts, and a keyboard that appears for each press would come and go between reads.
 On X11 the test uses xdotool instead (the app's X11 key listener reads the X server).
@@ -36,29 +41,60 @@ def node_of(ui):
     return "(no /dev/input node found)"
 
 
-def main():
-    fifo = sys.argv[2]
+def lines(fifo):
+    if fifo == "-":
+        yield from iter(sys.stdin.readline, "")
+        return
+    while True:
+        with open(fifo) as f:
+            yield from f
+
+
+def gnome(fifo):
+    from gi.repository import Gio, GLib
+    bus = Gio.bus_get_sync(Gio.BusType.SESSION)
     if not os.path.exists(fifo):
+        os.mkfifo(fifo)
+    for line in lines(fifo):
+        parts = line.split()
+        if len(parts) == 2 and parts[1] in KEYS:
+            presses = {"down": [True], "up": [False], "tap": [True, False]}.get(parts[0], [])
+            for i, pressed in enumerate(presses):
+                if i:
+                    time.sleep(0.05)
+                # The same key reaches the desktop first, then the app (as a key event
+                # reaches the compositor and evdev readers at about the same time).
+                try:
+                    bus.call_sync("org.gnome.Shell", "/app/blipai/TestShell", "app.blipai.TestShell", "Key",
+                                  GLib.Variant("(ub)", (KEYS[parts[1]], pressed)), None, 0, 2000, None)
+                except Exception as err:
+                    print("gnome-shell key failed:", err, file=sys.stderr, flush=True)
+        sys.stdout.write(line)
+        sys.stdout.flush()
+
+
+def main():
+    if sys.argv[1] == "gnome":
+        return gnome(sys.argv[2])
+    fifo = sys.argv[2]
+    if fifo != "-" and not os.path.exists(fifo):
         os.mkfifo(fifo)
     ui = UInput({e.EV_KEY: sorted(set(KEYS.values()))}, name="Blip Test Keyboard")
     print("ready", node_of(ui), flush=True)
-    while True:
-        with open(fifo) as f:
-            for line in f:
-                parts = line.split()
-                if len(parts) != 2 or parts[1] not in KEYS:
-                    continue
-                verb, code = parts[0], KEYS[parts[1]]
-                if verb in ("down", "tap"):
-                    ui.write(e.EV_KEY, code, 1)
-                    ui.syn()
-                if verb == "tap":
-                    time.sleep(0.05)
-                if verb in ("up", "tap"):
-                    ui.write(e.EV_KEY, code, 0)
-                    ui.syn()
-                time.sleep(0.04)
-
+    for line in lines(fifo):
+        parts = line.split()
+        if len(parts) != 2 or parts[1] not in KEYS:
+            continue
+        verb, code = parts[0], KEYS[parts[1]]
+        if verb in ("down", "tap"):
+            ui.write(e.EV_KEY, code, 1)
+            ui.syn()
+        if verb == "tap":
+            time.sleep(0.05)
+        if verb in ("up", "tap"):
+            ui.write(e.EV_KEY, code, 0)
+            ui.syn()
+        time.sleep(0.04)
 
 if __name__ == "__main__":
     main()

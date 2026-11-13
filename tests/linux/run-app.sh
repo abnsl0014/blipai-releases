@@ -14,6 +14,7 @@
 set -uo pipefail
 here="$(cd "$(dirname "$0")" && pwd)"
 source "$here/lib.sh"
+[ -n "$DESKTOP" ] && source "$here/onboarding.sh"
 touch "$OUT/.started"
 # The report runs outside a distro container, so leave the app's log (redacted there) and
 # the text box's event log in the shared folder, however this script ends.
@@ -52,6 +53,19 @@ key_listener() {  # prints how the app listens for the hotkey, or nothing
     local k; k=$(key_server_pids | head -n 1)
     [ -n "$k" ] && echo "X11KeyServer running (pid $k: $(readlink /proc/$k/exe 2> /dev/null))"
   fi
+}
+mount_holders() {  # "; held by PID COMM (its working directory / an open file …)": what keeps the AppImage mounted
+  local m p how f
+  for m in $(mount | grep -o '/tmp/.mount_Blip[^ ]*'); do
+    for p in /proc/[0-9]*; do
+      how=""
+      case "$(readlink "$p/cwd" 2> /dev/null)" in "$m"|"$m"/*) how="its working directory is in the mount" ;; esac
+      case "$(readlink "$p/exe" 2> /dev/null)" in "$m"/*) how="${how:+$how, }it runs from the mount" ;; esac
+      f=$(ls -l "$p/fd" 2> /dev/null | awk '{print $NF}' | grep -m1 -F "$m")
+      [ -n "$f" ] && how="${how:+$how, }it has ${f#$m} open"
+      [ -n "$how" ] && printf '; held by %s %s (%s)' "${p#/proc/}" "$(cat "$p/comm" 2> /dev/null)" "$how"
+    done
+  done
 }
 appimage_mounts() { mount 2>/dev/null | grep -c '/tmp/.mount_Blip' ; }
 newest_record() {  # "<status> <timestamp> <text>" of the newest history item
@@ -171,6 +185,11 @@ else
 fi
 sleep 3
 ui_dump signed-in
+# GNOME and KDE: the rest of the onboarding, including the desktop's paste permission dialog.
+if [ -n "$DESKTOP" ] && signed_in; then
+  onboarding_walk
+  start_portal_watch
+fi
 
 # --- 3. Relaunch signed in ------------------------------------------------------------
 mounts_before=$(appimage_mounts)
@@ -291,7 +310,32 @@ if app_has 'data-missed-action'; then
     # box and presses Enter. (The app is an X11 client in both sessions, directly or
     # through XWayland, so xdotool reaches it; AT-SPI doesn't see GTK's dialog here.)
     dialog=""
-    if [ "$SESSION" = wayland ] && wait_until 10 bash -c "swaymsg -t get_tree | grep -q '\"Save audio\"'"; then
+    # The desktop's file chooser: the portal's own window (GNOME 46, KDE), or since GNOME 47
+    # the portal hands it to Nautilus (Fedora 42's GNOME 48), which takes a while to start.
+    if [ -n "$DESKTOP" ] && wait_until 40 bash -c "'$PY' '$here/atspi.py' windows 'portal|nautilus' | grep -q 'Save audio'"; then
+      # GNOME and KDE: Electron asks the desktop's file chooser portal; its dialog is the
+      # desktop's own (GTK 4 or Qt), which AT-SPI reaches: type the path, press Save.
+      # Press Save with the name it suggests, as most people do, and take where it went
+      # from the portal's answer. (Typing a path over AT-SPI didn't take in KDE's Qt dialog:
+      # it saved under the suggested name, run 43420941538.)
+      dialog="desktop's file chooser: $(with_timeout 40 "$PY" "$here/atspi.py" press 'portal|nautilus' Save "Save audio" 2>&1)"
+      sleep 3
+      chosen=$("$PY" - "$OUT/portal-dbus.log" "$(stat -c %Y "$OUT/.before-save")" << 'PY'
+import re, sys
+text = open(sys.argv[1], errors="replace").read()
+since = float(sys.argv[2])
+uri = ""
+for block in re.split(r"\n(?=signal |method call |method return |error )", text):
+    t = re.search(r"time=([\d.]+)", block)
+    if t and float(t.group(1)) >= since and "member=Response" in block:
+        m = re.search(r'string "file://([^"]+)"', block)
+        if m:
+            uri = m.group(1)
+print(uri)
+PY
+)
+      [ -n "$chosen" ] && saved_to="$chosen" && dialog="$dialog; the portal says it saved to $chosen"
+    elif [ -z "$DESKTOP" ] && [ "$SESSION" = wayland ] && wait_until 10 bash -c "swaymsg -t get_tree | grep -q '\"Save audio\"'"; then
       # Under Sway, xdotool's keys don't reach XWayland windows; focus it with Sway and
       # type with wtype (one run, so its virtual keyboard stays; the pause lets it settle).
       # Whose dialog is it: the app's own GTK one (XWayland) or a desktop portal's?
@@ -380,6 +424,8 @@ else
   record SKIP "Failed transcription is kept as a Missed item" "this build has no Missed items"
 fi
 
+[ -n "$DESKTOP" ] && report_portal_watch
+
 # History.
 history=$(python3 -c '
 import json, sys
@@ -432,7 +478,7 @@ if [ -n "$(key_server_pids)" ]; then record FAIL "Key listener exits with the ap
 else record PASS "Key listener exits with the app" ""; fi
 if [ -z "${APPIMAGE_EXTRACT_AND_RUN:-}" ]; then
   [ "$(appimage_mounts)" -eq 0 ] && record PASS "AppImage mount is cleaned up" "" \
-    || record FAIL "AppImage mount is cleaned up" "$(mount | grep /tmp/.mount_Blip | cut -c1-120)"
+    || record FAIL "AppImage mount is cleaned up" "$(mount | grep /tmp/.mount_Blip | cut -c1-120)$( [ -n "$DESKTOP" ] && mount_holders)"
 fi
 
 # Relaunching with that ended session asks the user to sign in again.

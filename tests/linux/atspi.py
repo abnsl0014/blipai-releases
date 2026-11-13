@@ -7,7 +7,13 @@ readers use). The app is started with --force-renderer-accessibility so Chromium
                                  press the first button whose name contains LABEL
   atspi.py windows APP           the names of APP's windows
   atspi.py save-as APP PATH      in APP's save dialog, type PATH as the name and press Save
-APP is matched against the accessible application name, case-insensitively, as a substring.
+  atspi.py portal-dialog         the text of the desktop portal's consent dialog, if one is up
+  atspi.py portal-approve        approve that dialog as a person does: turn on its switches
+                                 that grant access (GNOME: "Allow Remote Interaction", without
+                                 which Share stays greyed out), keep its defaults otherwise
+                                 ("Remember This Selection"), press Share / Approve / Allow
+APP is matched against the accessible application name, case-insensitively, as a substring
+("a|b": either).
 """
 import sys
 
@@ -21,7 +27,7 @@ def apps(name):
             app = desktop.getChildAtIndex(i)
         except Exception:
             continue
-        if app is not None and name.lower() in (app.name or "").lower():
+        if app is not None and any(n.lower() in (app.name or "").lower() for n in name.split("|")):
             yield app
 
 
@@ -66,8 +72,92 @@ def text_of(node):
     return node.name or ""
 
 
+APPROVE = ("Share", "Approve", "Allow")
+GRANT_SWITCHES = ("Allow Remote Interaction",)
+
+
+def portal_dialogs():
+    """(window, nodes) for each window of a portal backend (xdg-desktop-portal-gnome, -kde,
+    -gtk) or GNOME Shell that has a Share / Approve / Allow button."""
+    for w in windows("portal"):
+        nodes = list(walk(w))
+        for n in nodes:
+            try:
+                if n.getRoleName() in ("push button", "button") and (n.name or "").replace("_", "") in APPROVE:
+                    yield w, nodes
+                    break
+            except Exception:
+                continue
+
+
+def describe(w, nodes):
+    seen, lines = set(), [f"[{w.name}]"]
+    for n in nodes:
+        try:
+            role, name = n.getRoleName(), (text_of(n) or "").strip().replace("\n", " ")
+        except Exception:
+            continue
+        key = (role in ("check box", "toggle button", "switch", "push button", "button"), name)
+        if not name or key in seen:
+            continue
+        seen.add(key)
+        if role in ("check box", "toggle button", "switch"):
+            on = n.getState().contains(pyatspi.STATE_CHECKED)
+            lines.append(f"{name} [{'on' if on else 'off'}]")
+        elif role in ("push button", "button"):
+            ok = n.getState().contains(pyatspi.STATE_SENSITIVE)
+            lines.append(f"({name}{'' if ok else ', greyed out'})")
+        elif role in ("label", "heading", "text", "static"):
+            lines.append(name)
+    return " ".join(lines)
+
+
 def main():
-    cmd, app = sys.argv[1], sys.argv[2]
+    cmd = sys.argv[1]
+    if cmd == "portal-dialog":
+        found = [describe(w, n) for w, n in portal_dialogs()]
+        print(" | ".join(found))
+        return 0 if found else 2
+    if cmd == "portal-approve":
+        import time
+        for w, nodes in portal_dialogs():
+            done = []
+            for switch in GRANT_SWITCHES:
+                # GTK 4.18 (GNOME 48) has the row and the switch in it both as check boxes
+                # of that name; only the switch has an action. Turn it on once.
+                cands = []
+                for n in nodes:
+                    try:
+                        if n.getRoleName() in ("check box", "toggle button", "switch") and (n.name or "") == switch:
+                            cands.append(n)
+                    except Exception:
+                        continue
+                if not cands or any(n.getState().contains(pyatspi.STATE_CHECKED) for n in cands):
+                    continue
+                for n in cands:
+                    try:
+                        if n.queryAction().nActions > 0:
+                            n.queryAction().doAction(0)
+                            done.append(f'turned on "{switch}"')
+                            time.sleep(0.5)
+                            break
+                    except Exception:
+                        continue
+            for label in APPROVE:
+                for n in nodes:
+                    try:
+                        if n.getRoleName() in ("push button", "button") and (n.name or "").replace("_", "") == label:
+                            if not n.getState().contains(pyatspi.STATE_SENSITIVE):
+                                print("; ".join(done + [f'"{label}" is greyed out']))
+                                return 1
+                            n.queryAction().doAction(0)
+                            print("; ".join(done + [f'pressed "{label}" in "{w.name}"']))
+                            return 0
+                    except Exception:
+                        continue
+        print("no portal dialog")
+        return 2
+    app = sys.argv[2]
     if cmd == "windows":
         print(", ".join(w.name or "?" for w in windows(app)))
     elif cmd == "text":
