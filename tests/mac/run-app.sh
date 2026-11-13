@@ -174,7 +174,10 @@ log_before=$(wc -l < "$(app_log)" 2>/dev/null || echo 0)
 render_speech "The quick brown fox jumps over the lazy dog near the river bank." \
   "Please send the quarterly report to the whole team before Friday afternoon." \
   "Um, so I think we should, uh, move the meeting to next week." \
-  "This sentence should never be typed."
+  "This sentence should never be typed." \
+  "The weather today is sunny with a light breeze from the west." \
+  "Our new office opens on the first floor next month." \
+  "Remember to water the plants on Saturday morning."
 
 # 4a. Push-to-talk: hold Fn, speak, release. (After it, the app's log says which mic it used.)
 phrase="The quick brown fox jumps over the lazy dog near the river bank."
