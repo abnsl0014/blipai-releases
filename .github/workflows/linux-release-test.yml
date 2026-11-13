@@ -87,8 +87,8 @@ jobs:
       GH_TOKEN: ${{ github.token }}
       SESSION: ${{ matrix.session }}
       IMAGE: ${{ matrix.image }}
-      OUT: ${{ runner.temp }}/blip-test
-      SPEECH_DIR: ${{ runner.temp }}/speech
+      # OUT ($RUNNER_TEMP/blip-test) and SPEECH_DIR ($RUNNER_TEMP/speech) default in lib.sh:
+      # the runner context isn't available at the job level.
     steps:
       - uses: actions/checkout@v4
 
