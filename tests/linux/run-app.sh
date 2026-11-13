@@ -306,7 +306,26 @@ if app_has 'data-missed-action'; then
     if [ -n "$DESKTOP" ] && wait_until 15 bash -c "'$PY' '$here/atspi.py' windows portal | grep -q 'Save audio'"; then
       # GNOME and KDE: Electron asks the desktop's file chooser portal; its dialog is the
       # desktop's own (GTK 4 or Qt), which AT-SPI reaches: type the path, press Save.
-      dialog="desktop's file chooser: $(with_timeout 40 "$PY" "$here/atspi.py" save-as portal "$saved_to" 2>&1)"
+      # Press Save with the name it suggests, as most people do, and take where it went
+      # from the portal's answer. (Typing a path over AT-SPI didn't take in KDE's Qt dialog:
+      # it saved under the suggested name, run 43420941538.)
+      dialog="desktop's file chooser: $(with_timeout 40 "$PY" "$here/atspi.py" press portal Save "Save audio" 2>&1)"
+      sleep 3
+      chosen=$("$PY" - "$OUT/portal-dbus.log" "$(stat -c %Y "$OUT/.before-save")" << 'PY'
+import re, sys
+text = open(sys.argv[1], errors="replace").read()
+since = float(sys.argv[2])
+uri = ""
+for block in re.split(r"\n(?=signal |method call |method return |error )", text):
+    t = re.search(r"time=([\d.]+)", block)
+    if t and float(t.group(1)) >= since and "member=Response" in block:
+        m = re.search(r'string "file://([^"]+)"', block)
+        if m:
+            uri = m.group(1)
+print(uri)
+PY
+)
+      [ -n "$chosen" ] && saved_to="$chosen" && dialog="$dialog; the portal says it saved to $chosen"
     elif [ -z "$DESKTOP" ] && [ "$SESSION" = wayland ] && wait_until 10 bash -c "swaymsg -t get_tree | grep -q '\"Save audio\"'"; then
       # Under Sway, xdotool's keys don't reach XWayland windows; focus it with Sway and
       # type with wtype (one run, so its virtual keyboard stays; the pause lets it settle).

@@ -81,6 +81,8 @@ def main():
         parts.append("RemoteDesktop portal session asked for, no keys sent")
     shown = []
     for e in notices:  # Notify(app_name, replaces_id, app_icon, summary, body, ...)
+        if not e[2] or "blip" not in e[2][0].lower():
+            continue  # the desktop's own notices (KDE: "Remote control session started")
         text = ": ".join(x for x in e[2][3:5] if x)[:90]
         if text and text not in shown:  # GNOME Shell passes it on once more
             shown.append(text)
